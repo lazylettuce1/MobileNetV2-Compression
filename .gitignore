@@ -1,0 +1,19 @@
+# Deep Learning weights, checkpoints, & datasets
+*.pth
+*.pt
+*.onnx
+*.bin
+*.h5
+*.ckpt
+data/
+datasets/
+
+# Python & IDE artifacts
+__pycache__/
+*.pyc
+venv/
+.venv/
+.vscode/
+.ipynb_checkpoints/
+runs/
+wandb/
