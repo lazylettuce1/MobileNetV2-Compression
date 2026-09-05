@@ -28,7 +28,7 @@ from data import get_dataloaders
 from model import MobileNetV2CIFAR
 from utils import AverageMeter, accuracy, save_checkpoint, set_seed
 
-
+# a custom structure of all the required config parameters during training
 @dataclass
 class TrainConfig:
     data_dir: str = "./data"
@@ -49,6 +49,9 @@ class TrainConfig:
     resume: Optional[str] = None
 
 
+# Schedule learning rate with linear warmup and cosine decay. This is a simple
+# implementation of the schedule used in the original MobileNetV2 paper, which
+# is also the default in torchvision's MobileNetV2 training script. 
 def build_scheduler(optimizer, warmup_epochs, total_epochs, steps_per_epoch):
     warmup_steps = warmup_epochs * steps_per_epoch
     total_steps = total_epochs * steps_per_epoch
