@@ -1,18 +1,10 @@
 """
 train.py — training logic for the CIFAR-10 MobileNetV2 baseline.
 
-Two ways to use this:
-  1. CLI / subprocess:  python train.py --epochs 150 --out-dir runs/baseline
-     (or `!python train.py --args` from a notebook cell)
-  2. Imported directly into a notebook cell running on the Colab kernel:
-         from train import TrainConfig, run_training
-         cfg = TrainConfig(epochs=150, out_dir="runs/baseline")
-         history, model = run_training(cfg)
-     Runs in-process — you keep the trained `model` and per-epoch `history`
-     as live Python objects for the next cell to plot/inspect.
-
-Both paths call the same `run_training`, so there's exactly one training
-implementation regardless of how you launch it.
+CLI:       python train.py --epochs 150 --out-dir runs/baseline
+Notebook:  from train import TrainConfig, run_training
+           cfg = TrainConfig(epochs=150, out_dir="runs/baseline")
+           history, model = run_training(cfg)
 """
 import argparse
 import csv
@@ -23,12 +15,13 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+from tqdm.auto import tqdm
 
 from data import get_dataloaders
 from model import MobileNetV2CIFAR
 from utils import AverageMeter, accuracy, save_checkpoint, set_seed
 
-# a custom structure of all the required config parameters during training
+
 @dataclass
 class TrainConfig:
     data_dir: str = "./data"
@@ -42,17 +35,16 @@ class TrainConfig:
     width_mult: float = 1.0
     dropout: float = 0.2
     pretrained: bool = False
-    num_workers: int = 2          # Colab: few CPU cores, keep this low
+    num_workers: int = 0        # 0 avoids DataLoader worker-teardown noise in notebooks
     seed: int = 42
     amp: bool = True
     use_wandb: bool = False
     resume: Optional[str] = None
+    download: bool = False      # explicit switch — see note below on first-run vs later
 
 
-# Schedule learning rate with linear warmup and cosine decay. This is a simple
-# implementation of the schedule used in the original MobileNetV2 paper, which
-# is also the default in torchvision's MobileNetV2 training script. 
 def build_scheduler(optimizer, warmup_epochs, total_epochs, steps_per_epoch):
+    """Linear warmup -> cosine decay to 0, stepped once per batch."""
     warmup_steps = warmup_epochs * steps_per_epoch
     total_steps = total_epochs * steps_per_epoch
 
@@ -65,47 +57,34 @@ def build_scheduler(optimizer, warmup_epochs, total_epochs, steps_per_epoch):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-from tqdm.auto import tqdm
-
-def train_one_epoch(model, loader, optimizer, scheduler, criterion, scaler, device):
-    model.train()
+def run_epoch(model, loader, criterion, device, optimizer=None, scheduler=None, scaler=None, desc="epoch"):
+    """One pass over `loader`. Pass optimizer+scheduler+scaler to train; omit all three to evaluate."""
+    train_mode = optimizer is not None
+    model.train(train_mode)
     loss_meter, acc_meter = AverageMeter(), AverageMeter()
-    pbar = tqdm(loader, desc="train", leave=False)
-    for images, targets in pbar:
-        images = images.to(device, non_blocking=True)
-        targets = targets.to(device, non_blocking=True)
-        optimizer.zero_grad(set_to_none=True)
 
-        with torch.cuda.amp.autocast(enabled=scaler.is_enabled()):
-            outputs = model(images)
-            loss = criterion(outputs, targets)
+    with torch.set_grad_enabled(train_mode):
+        pbar = tqdm(loader, desc=desc, leave=False)
+        for images, targets in pbar:
+            images = images.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
 
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
-        scheduler.step()
+            with torch.amp.autocast("cuda", enabled=train_mode and scaler is not None and scaler.is_enabled()):
+                outputs = model(images)
+                loss = criterion(outputs, targets)
 
-        top1, = accuracy(outputs, targets, topk=(1,))
-        loss_meter.update(loss.item(), images.size(0))
-        acc_meter.update(top1, images.size(0))
-        pbar.set_postfix(loss=f"{loss_meter.avg:.3f}", acc=f"{acc_meter.avg:.2f}")
-    return loss_meter.avg, acc_meter.avg
+            if train_mode:
+                optimizer.zero_grad(set_to_none=True)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()
 
+            top1, = accuracy(outputs, targets, topk=(1,))
+            loss_meter.update(loss.item(), images.size(0))
+            acc_meter.update(top1, images.size(0))
+            pbar.set_postfix(loss=f"{loss_meter.avg:.3f}", acc=f"{acc_meter.avg:.2f}")
 
-@torch.no_grad()
-def evaluate(model, loader, criterion, device):
-    model.eval()
-    loss_meter, acc_meter = AverageMeter(), AverageMeter()
-    pbar = tqdm(loader, desc="eval", leave=False)
-    for images, targets in pbar:
-        images = images.to(device, non_blocking=True)
-        targets = targets.to(device, non_blocking=True)
-        outputs = model(images)
-        loss = criterion(outputs, targets)
-        top1, = accuracy(outputs, targets, topk=(1,))
-        loss_meter.update(loss.item(), images.size(0))
-        acc_meter.update(top1, images.size(0))
-        pbar.set_postfix(loss=f"{loss_meter.avg:.3f}", acc=f"{acc_meter.avg:.2f}")
     return loss_meter.avg, acc_meter.avg
 
 
@@ -115,8 +94,7 @@ def run_training(cfg: TrainConfig):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Training on device: {device}")
     if device == "cpu":
-        print("WARNING: no GPU detected — training will be very slow. "
-              "Check Colab's Runtime → Change runtime type → GPU.")
+        print("WARNING: no GPU detected — check your runtime's hardware accelerator setting.")
 
     os.makedirs(cfg.out_dir, exist_ok=True)
     log_path = os.path.join(cfg.out_dir, "log.csv")
@@ -131,22 +109,23 @@ def run_training(cfg: TrainConfig):
         import wandb
         wandb_run = wandb.init(project="mobilenetv2-cifar10", config=asdict(cfg))
 
+    print(f"Loading CIFAR-10 from {cfg.data_dir} (download={cfg.download})...")
     train_loader, test_loader = get_dataloaders(
-        cfg.data_dir, batch_size=cfg.batch_size, num_workers=cfg.num_workers
+        cfg.data_dir, batch_size=cfg.batch_size, num_workers=cfg.num_workers, download=cfg.download
     )
+    print(f"Data ready: {len(train_loader.dataset)} train / {len(test_loader.dataset)} test images")
 
     model = MobileNetV2CIFAR(
-        num_classes=10, width_mult=cfg.width_mult, dropout=cfg.dropout,
-        pretrained=cfg.pretrained,
+        num_classes=10, width_mult=cfg.width_mult, dropout=cfg.dropout, pretrained=cfg.pretrained,
     ).to(device)
+    print(f"Model built: {sum(p.numel() for p in model.parameters())/1e6:.2f}M params")
 
     criterion = nn.CrossEntropyLoss(label_smoothing=cfg.label_smoothing)
     optimizer = torch.optim.SGD(
-        model.parameters(), lr=cfg.lr, momentum=0.9, nesterov=True,
-        weight_decay=cfg.weight_decay,
+        model.parameters(), lr=cfg.lr, momentum=0.9, nesterov=True, weight_decay=cfg.weight_decay,
     )
     scheduler = build_scheduler(optimizer, cfg.warmup_epochs, cfg.epochs, len(train_loader))
-    scaler = torch.cuda.amp.GradScaler(enabled=cfg.amp and device == "cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=cfg.amp and device == "cuda")
 
     start_epoch, best_acc = 1, 0.0
     if cfg.resume:
@@ -164,10 +143,10 @@ def run_training(cfg: TrainConfig):
     history = []
     for epoch in range(start_epoch, cfg.epochs + 1):
         t0 = time.time()
-        train_loss, train_acc = train_one_epoch(
-            model, train_loader, optimizer, scheduler, criterion, scaler, device
+        train_loss, train_acc = run_epoch(
+            model, train_loader, criterion, device, optimizer, scheduler, scaler, desc=f"epoch {epoch} train"
         )
-        test_loss, test_acc = evaluate(model, test_loader, criterion, device)
+        test_loss, test_acc = run_epoch(model, test_loader, criterion, device, desc=f"epoch {epoch} eval")
         epoch_time = time.time() - t0
         current_lr = optimizer.param_groups[0]["lr"]
 
@@ -209,7 +188,6 @@ def run_training(cfg: TrainConfig):
 
 
 def _parse_args() -> TrainConfig:
-    """CLI entrypoint only — builds a TrainConfig from sys.argv."""
     d = TrainConfig()
     p = argparse.ArgumentParser()
     p.add_argument("--data-dir", type=str, default=d.data_dir)
@@ -228,6 +206,7 @@ def _parse_args() -> TrainConfig:
     p.add_argument("--amp", action="store_true", default=d.amp)
     p.add_argument("--use-wandb", action="store_true", default=d.use_wandb)
     p.add_argument("--resume", type=str, default=d.resume)
+    p.add_argument("--download", action="store_true", default=d.download)
     return TrainConfig(**vars(p.parse_args()))
 
 

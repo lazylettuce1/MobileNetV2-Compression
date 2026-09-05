@@ -35,14 +35,15 @@ def get_transforms():
 
 def get_dataloaders(data_dir: str = "./data",
                      batch_size: int = 128,
-                     num_workers: int = 4):
+                     num_workers: int = 0,
+                     download: bool = False):
     train_tf, test_tf = get_transforms()
 
     train_set = torchvision.datasets.CIFAR10(
-        data_dir, train=True, download=True, transform=train_tf
+        data_dir, train=True, download=download , transform=train_tf
     )
     test_set = torchvision.datasets.CIFAR10(
-        data_dir, train=False, download=True, transform=test_tf
+        data_dir, train=False, download=download, transform=test_tf
     )
 
     train_loader = torch.utils.data.DataLoader(
