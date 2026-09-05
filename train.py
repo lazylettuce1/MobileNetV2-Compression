@@ -65,10 +65,13 @@ def build_scheduler(optimizer, warmup_epochs, total_epochs, steps_per_epoch):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
+from tqdm.auto import tqdm
+
 def train_one_epoch(model, loader, optimizer, scheduler, criterion, scaler, device):
     model.train()
     loss_meter, acc_meter = AverageMeter(), AverageMeter()
-    for images, targets in loader:
+    pbar = tqdm(loader, desc="train", leave=False)
+    for images, targets in pbar:
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
@@ -85,6 +88,7 @@ def train_one_epoch(model, loader, optimizer, scheduler, criterion, scaler, devi
         top1, = accuracy(outputs, targets, topk=(1,))
         loss_meter.update(loss.item(), images.size(0))
         acc_meter.update(top1, images.size(0))
+        pbar.set_postfix(loss=f"{loss_meter.avg:.3f}", acc=f"{acc_meter.avg:.2f}")
     return loss_meter.avg, acc_meter.avg
 
 
@@ -92,7 +96,8 @@ def train_one_epoch(model, loader, optimizer, scheduler, criterion, scaler, devi
 def evaluate(model, loader, criterion, device):
     model.eval()
     loss_meter, acc_meter = AverageMeter(), AverageMeter()
-    for images, targets in loader:
+    pbar = tqdm(loader, desc="eval", leave=False)
+    for images, targets in pbar:
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
         outputs = model(images)
@@ -100,6 +105,7 @@ def evaluate(model, loader, criterion, device):
         top1, = accuracy(outputs, targets, topk=(1,))
         loss_meter.update(loss.item(), images.size(0))
         acc_meter.update(top1, images.size(0))
+        pbar.set_postfix(loss=f"{loss_meter.avg:.3f}", acc=f"{acc_meter.avg:.2f}")
     return loss_meter.avg, acc_meter.avg
 
 
@@ -107,6 +113,10 @@ def run_training(cfg: TrainConfig):
     """Runs the full training loop and returns (history, model)."""
     set_seed(cfg.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Training on device: {device}")
+    if device == "cpu":
+        print("WARNING: no GPU detected — training will be very slow. "
+              "Check Colab's Runtime → Change runtime type → GPU.")
 
     os.makedirs(cfg.out_dir, exist_ok=True)
     log_path = os.path.join(cfg.out_dir, "log.csv")
