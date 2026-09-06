@@ -1,5 +1,5 @@
 # Deep Learning weights, checkpoints, & datasets
-*.pth
+# *.pth
 *.pt
 *.onnx
 *.bin

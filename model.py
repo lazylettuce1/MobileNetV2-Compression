@@ -47,7 +47,7 @@ def MobileNetV2CIFAR(num_classes: int = 10,
     assert isinstance(depthwise_conv, nn.Conv2d), (
         "torchvision internals changed — inspect model.features[2].conv manually"
     )
-    depthwise_conv.stride = (1, 1)
+    depthwise_conv.stride = (1, 1) 
     # -----------------------------------------------------------------------
 
     # Swap the classifier head for CIFAR-10 (num_classes), keep dropout as-is
