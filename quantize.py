@@ -22,15 +22,13 @@ Design choices, per the architecture analysis above:
     attach ActFakeQuant to. Documented exception, not an oversight.
 
 Usage:
-    cfg = QuantConfig(weight_quant_bits=8, activation_quant_bits=8)
-    swap_to_quant_modules(model, cfg)
-    calibrate(model, calib_loader, device)
-    freeze_all(model)
-    # ... run your existing evaluate() here for fake-quant accuracy ...
-    packed = pack_int8(model)                    # REAL int8 tensors
-    torch.save(packed, "quantized_int8.pth")      # genuinely smaller file
-    report = compression_ratio_report(fp32_model, packed)
-    act_report = estimate_activation_compression(model, sample_batch, cfg.activation_quant_bits, device)
+    from quantize import run_quantization_pipeline
+
+    run_quantization_pipeline(
+        ckpt_path="/kaggle/working/MobileNetV2-Compression/outputs/baseline/best.pth",
+        data_dir=DATA_DIR,
+        calib_batches=40
+)
 """
 import io
 from collections import OrderedDict
@@ -333,3 +331,88 @@ def estimate_activation_compression(model, sample_batch, act_bits, device):
         "quantized_activation_mb": quant_bytes / (1024 ** 2),
         "activation_compression_ratio": fp32_bytes / quant_bytes,
     }
+
+# ---------------------------------------------------------------------------
+# High-Level Pipeline & CLI
+# ---------------------------------------------------------------------------
+def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8, calib_batches=40, out_path="quantized_int8.pth"):
+    """End-to-end quantization pipeline: loads, quantizes, calibrates, evaluates, and prints reports."""
+    import copy
+    from model import MobileNetV2CIFAR
+    from data import get_dataloaders
+    from utils import accuracy, AverageMeter
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    print(f"Loading baseline from {ckpt_path}...")
+    model = MobileNetV2CIFAR(num_classes=10, dropout=0.2)
+    ckpt = torch.load(ckpt_path, map_location="cpu")
+    model.load_state_dict(ckpt["state_dict"])
+    model_fp32 = copy.deepcopy(model)
+    
+    _, test_loader = get_dataloaders(data_dir=data_dir, download=False)
+    
+    # Quantize & Calibrate
+    cfg = QuantConfig(weight_quant_bits=weight_bits, activation_quant_bits=act_bits, calibration_batches=calib_batches)
+    swap_to_quant_modules(model, cfg)
+    model.to(device)
+    
+    print(f"Calibrating with {calib_batches} batches...")
+    calibrate(model, test_loader, device, n_batches=cfg.calibration_batches)
+    freeze_all(model)
+    
+    # Evaluate
+    print("Evaluating Fake-Quant Model...")
+    model.eval()
+    acc_meter = AverageMeter()
+    with torch.no_grad():
+        for images, targets in test_loader:
+            images, targets = images.to(device), targets.to(device)
+            outputs = model(images)
+            top1, = accuracy(outputs, targets, topk=(1,))
+            acc_meter.update(top1, images.size(0))
+            
+    print(f"\n--- ACCURACY ---")
+    print(f"Baseline test acc: {ckpt.get('best_acc', 0.0):.2f}%")
+    print(f"INT8 quantized test acc: {acc_meter.avg:.2f}%")
+    
+    # Pack & Report
+    print("\n--- SIZE & COMPRESSION REPORT ---")
+    packed = pack_int8(model)
+    torch.save(packed, out_path)
+    
+    report = compression_ratio_report(model_fp32, packed)
+    print(f"Original FP32 Model Size:   {report['fp32_total_mb']:.2f} MB")
+    print(f"Packed INT8 Model Size:     {report['quantized_total_mb']:.2f} MB")
+    print(f"Overall Compression Ratio:  {report['overall_compression_ratio']:.2f}x")
+    print(f"Weights-Only Comp. Ratio:   {report['weights_compression_ratio']:.2f}x")
+    
+    sample_batch, _ = next(iter(test_loader))
+    act_report = estimate_activation_compression(model, sample_batch, cfg.activation_quant_bits, device)
+    
+    print(f"\n--- ACTIVATION FOOTPRINT (Per Batch) ---")
+    print(f"FP32 Activations: {act_report['fp32_activation_mb']:.2f} MB")
+    print(f"INT8/Quant Activations: {act_report['quantized_activation_mb']:.2f} MB")
+    print(f"Activation Comp. Ratio: {act_report['activation_compression_ratio']:.2f}x")
+    print(f"\nSaved real INT8 weights to: {out_path}")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Run INT8 Quantization Pipeline")
+    parser.add_argument("--ckpt", type=str, required=True, help="Path to baseline best.pth")
+    parser.add_argument("--data_dir", type=str, required=True, help="Path to CIFAR-10 data dir")
+    parser.add_argument("--w_bits", type=int, default=8, help="Weight quant bits")
+    parser.add_argument("--a_bits", type=int, default=8, help="Activation quant bits")
+    parser.add_argument("--calib", type=int, default=40, help="Number of calibration batches")
+    parser.add_argument("--out", type=str, default="quantized_int8.pth", help="Output file path")
+    
+    args = parser.parse_args()
+    run_quantization_pipeline(
+        ckpt_path=args.ckpt, 
+        data_dir=args.data_dir, 
+        weight_bits=args.w_bits, 
+        act_bits=args.a_bits, 
+        calib_batches=args.calib,
+        out_path=args.out
+    )
