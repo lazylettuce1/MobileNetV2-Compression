@@ -318,27 +318,45 @@ def metadata_overhead_report(packed):
     }
 
 
-def compression_ratio_report(model_fp32, packed):
+def compression_ratio_report(model_fp32, packed, weight_bits):
+    """
+    Calculates the exact theoretical size for arbitrary bit-widths (e.g. 6-bit)
+    without needing to write complex bit-packing algorithms.
+    """
     fp32_mb = fp32_size_mb(model_fp32)
-    packed_mb = real_packed_size_mb(packed)
     meta = metadata_overhead_report(packed)
 
-    fp32_weight_bytes = sum(
-        p.numel() * 4 for n, p in model_fp32.named_parameters()
-        if n.endswith("weight") and p.dim() > 1     # excludes BN's 1-D weight/gamma
-    )
-    quant_weight_bytes = sum(
-        e["qweight"].numel() * 1 + e["scale"].numel() * 4
+    # 1. Count the raw number of quantized weight parameters
+    quant_elements = sum(
+        e["qweight"].numel() 
         for n, e in packed.items() if n != "_other_fp32"
     )
 
+    # 2. Mathematically calculate their size at the given bit-width
+    # Size in bytes = (elements * bits) / 8
+    quantized_weights_only_mb = (quant_elements * weight_bits / 8) / (1024 ** 2)
+
+    # 3. Add back the FP32 overhead (scales, biases, BatchNorm)
+    theoretical_total_mb = (
+        quantized_weights_only_mb + 
+        meta["scale_storage_mb"] + 
+        meta["bn_and_other_fp32_mb"]
+    )
+
+    # 4. Baseline FP32 weights size
+    fp32_weight_bytes = sum(
+        p.numel() * 4 for n, p in model_fp32.named_parameters()
+        if n.endswith("weight") and p.dim() > 1     
+    )
+    fp32_weights_only_mb = fp32_weight_bytes / (1024 ** 2)
+
     return {
         "fp32_total_mb": fp32_mb,
-        "quantized_total_mb": packed_mb,
-        "overall_compression_ratio": fp32_mb / packed_mb,
-        "fp32_weights_only_mb": fp32_weight_bytes / (1024 ** 2),
-        "quantized_weights_only_mb": quant_weight_bytes / (1024 ** 2),
-        "weights_compression_ratio": fp32_weight_bytes / quant_weight_bytes,
+        "quantized_total_mb": theoretical_total_mb,
+        "overall_compression_ratio": fp32_mb / theoretical_total_mb,
+        "fp32_weights_only_mb": fp32_weights_only_mb,
+        "quantized_weights_only_mb": quantized_weights_only_mb,
+        "weights_compression_ratio": fp32_weights_only_mb / quantized_weights_only_mb,
         **meta,
     }
 
