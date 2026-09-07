@@ -44,6 +44,7 @@ except ImportError:
 
 @dataclass
 class QuantConfig:
+    sparsity: float = 0.3 
     weight_quant_bits: int = 8
     activation_quant_bits: int = 8
     calibration_batches: int = 40   # confirmed better than 20 empirically
@@ -165,6 +166,43 @@ class ActFakeQuant(nn.Module):
         self.qmin, self.qmax = 0, qmax
         self.frozen = True
 
+@torch.no_grad()
+def apply_global_magnitude_pruning(model, sparsity=0.3):
+    """
+    Manually applies global unstructured magnitude pruning across all Conv2d and Linear layers.
+    """
+    all_weights = []
+    
+    # 1. Collect absolute values of all weights
+    for m in model.modules():
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            all_weights.append(m.weight.view(-1).abs())
+            
+    if not all_weights:
+        return model
+        
+    concat_weights = torch.cat(all_weights)
+    
+    # 2. Find the global threshold using the exact quantile
+    # e.g., if sparsity is 0.3, find the value at the 30th percentile
+    threshold = torch.quantile(concat_weights, sparsity).item()
+    
+    # 3. Apply the threshold mask to permanently zero out the weights
+    pruned_params = 0
+    total_params = 0
+    
+    for m in model.modules():
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            total_params += m.weight.numel()
+            # Create boolean mask for weights strictly greater than or equal to threshold
+            mask = m.weight.abs() >= threshold
+            # Multiply data by mask (converts False to 0.0, True to 1.0)
+            m.weight.data.mul_(mask.type_as(m.weight.data))
+            
+            pruned_params += (mask == False).sum().item()
+            
+    print(f"Manual Global Pruning: {pruned_params}/{total_params} parameters removed ({(pruned_params/total_params)*100:.2f}%). Threshold: {threshold:.6f}")
+    return model
 
 # ---------------------------------------------------------------------------
 # model surgery
@@ -224,7 +262,7 @@ def attach_block_output_quant(model, act_bits):
             m.add_module("_block_output_aq", aq)  # so freeze_all()/calibrate() find it
             m.register_forward_hook(lambda mod, inp, out, aq=aq: aq(out))
             count += 1
-    print(f"attach_block_output_quant: instrumented {count} InvertedResidual block outputs")
+    # print(f"attach_block_output_quant: instrumented {count} InvertedResidual block outputs")
     return model
 
 
@@ -242,48 +280,8 @@ def freeze_all(model):
         if isinstance(m, (QuantConv2d, QuantLinear, ActFakeQuant)):
             m.freeze()
 
-
 # ---------------------------------------------------------------------------
-# REAL int8 packing
-# ---------------------------------------------------------------------------
-def pack_int8(model):
-    """
-    Converts every frozen QuantConv2d/QuantLinear's weight into a genuine
-    torch.int8 tensor. Everything is explicitly moved to CPU first, so the
-    resulting file loads correctly regardless of what device it was quantized
-    on, or whether a GPU is even present when you load it back later.
-    """
-    packed, quantized_names = {}, set()
-    for name, m in model.named_modules():
-        if isinstance(m, (QuantConv2d, QuantLinear)):
-            if not m.frozen:
-                raise RuntimeError(f"{name} not frozen — call freeze_all(model) first")
-            with torch.no_grad():
-                # weight is already the quantized value post-freeze() — just
-                # re-derive the integer codes for storage
-                q = torch.round(m.weight.cpu() / m.w_scale.cpu()).clamp(m.qmin, m.qmax)
-            packed[name] = {
-                "qweight": q.to(torch.int8),
-                "scale": m.w_scale.detach().cpu().to(torch.float32).clone(),
-                "bias": m.bias.detach().cpu().clone() if m.bias is not None else None,
-                "type": "conv" if isinstance(m, QuantConv2d) else "linear",
-                "conv_args": (dict(stride=m.stride, padding=m.padding,
-                                    dilation=m.dilation, groups=m.groups)
-                              if isinstance(m, QuantConv2d) else None),
-            }
-            quantized_names.add(name)
-
-    other_fp32 = {}
-    for key, tensor in model.state_dict().items():
-        owner = key.rsplit(".", 1)[0]
-        if owner not in quantized_names:
-            other_fp32[key] = tensor.detach().cpu().clone()
-    packed["_other_fp32"] = other_fp32
-    return packed
-
-
-# ---------------------------------------------------------------------------
-# size + compression-ratio reporting
+# size + compression-ratio reporting (Now Mathematical & Direct)
 # ---------------------------------------------------------------------------
 def fp32_size_mb(model):
     """Standardized fp32 size: sum of every tensor in state_dict() (params +
@@ -294,74 +292,79 @@ def fp32_size_mb(model):
     return total / (1024 ** 2)
 
 
-def real_packed_size_mb(packed):
-    buf = io.BytesIO()
-    torch.save(packed, buf)
-    return len(buf.getvalue()) / (1024 ** 2)
-
-
-def metadata_overhead_report(packed):
-    n_layers, n_scales, scale_bytes = 0, 0, 0
-    for name, entry in packed.items():
-        if name == "_other_fp32":
-            continue
-        n_layers += 1
-        n_scales += entry["scale"].numel()
-        scale_bytes += entry["scale"].numel() * 4
-
-    other_bytes = sum(t.numel() * t.element_size() for t in packed["_other_fp32"].values())
-    return {
-        "n_quantized_layers": n_layers,
-        "n_scale_values_total": n_scales,
-        "scale_storage_mb": scale_bytes / (1024 ** 2),
-        "bn_and_other_fp32_mb": other_bytes / (1024 ** 2),
-    }
-
-
-def compression_ratio_report(model_fp32, packed, weight_bits):
+def compression_ratio_report(model, model_fp32, weight_bits):
     """
-    Calculates the exact theoretical size for arbitrary bit-widths (e.g. 6-bit)
-    without needing to write complex bit-packing algorithms.
+    Calculates size reflecting both uniform bit-width quantization 
+    and non-zero weight counts resulting from pruning.
     """
     fp32_mb = fp32_size_mb(model_fp32)
-    meta = metadata_overhead_report(packed)
+    
+    n_layers, n_scales, other_bytes = 0, 0, 0
+    total_quant_elements = 0
+    nonzero_quant_elements = 0
+    quantized_names = set()
+    
+    # 1. Tally parameters and non-zero elements
+    for name, m in model.named_modules():
+        if isinstance(m, (QuantConv2d, QuantLinear)):
+            n_layers += 1
+            n_scales += m.w_scale.numel()
+            quantized_names.add(name)
+            
+            total_els = m.weight.numel()
+            nnz = (m.weight != 0).sum().item()
+            
+            total_quant_elements += total_els
+            nonzero_quant_elements += nnz
 
-    # 1. Count the raw number of quantized weight parameters
-    quant_elements = sum(
-        e["qweight"].numel() 
-        for n, e in packed.items() if n != "_other_fp32"
-    )
+    # 2. Unquantized parameters (BatchNorms, unquantized biases, etc.)
+    for key, tensor in model.state_dict().items():
+        owner = key.rsplit(".", 1)[0]
+        if owner not in quantized_names:
+            other_bytes += tensor.numel() * tensor.element_size()
 
-    # 2. Mathematically calculate their size at the given bit-width
-    # Size in bytes = (elements * bits) / 8
-    quantized_weights_only_mb = (quant_elements * weight_bits / 8) / (1024 ** 2)
-
-    # 3. Add back the FP32 overhead (scales, biases, BatchNorm)
-    theoretical_total_mb = (
-        quantized_weights_only_mb + 
-        meta["scale_storage_mb"] + 
-        meta["bn_and_other_fp32_mb"]
-    )
-
-    # 4. Baseline FP32 weights size
+    # 3. Memory footprint calculations:
+    # - Non-zero weights store values at `weight_bits`
+    # - Sparse mask adds 1 bit per total parameter
+    sparse_weight_bits = (nonzero_quant_elements * weight_bits) + total_quant_elements
+    quantized_weights_only_mb = (sparse_weight_bits / 8) / (1024 ** 2)
+    
+    scale_storage_mb = (n_scales * 4) / (1024 ** 2)     # FP32 scale buffers
+    bn_and_other_fp32_mb = other_bytes / (1024 ** 2)
+    
+    theoretical_total_mb = quantized_weights_only_mb + scale_storage_mb + bn_and_other_fp32_mb
+    
+    # 4. FP32 baseline weight metrics
     fp32_weight_bytes = sum(
         p.numel() * 4 for n, p in model_fp32.named_parameters()
-        if n.endswith("weight") and p.dim() > 1     
+        if n.endswith("weight") and p.dim() > 1
     )
     fp32_weights_only_mb = fp32_weight_bytes / (1024 ** 2)
+    
+    overall_sparsity = 1.0 - (nonzero_quant_elements / total_quant_elements) if total_quant_elements > 0 else 0.0
 
     return {
         "fp32_total_mb": fp32_mb,
-        "quantized_total_mb": theoretical_total_mb,
+        "quantized_sparse_total_mb": theoretical_total_mb,
         "overall_compression_ratio": fp32_mb / theoretical_total_mb,
         "fp32_weights_only_mb": fp32_weights_only_mb,
-        "quantized_weights_only_mb": quantized_weights_only_mb,
+        "quantized_sparse_weights_only_mb": quantized_weights_only_mb,
         "weights_compression_ratio": fp32_weights_only_mb / quantized_weights_only_mb,
-        **meta,
+        "overall_weight_sparsity": f"{overall_sparsity * 100:.2f}%",
+        "n_quantized_layers": n_layers,
+        "n_scale_values_total": n_scales,
+        "scale_storage_mb": scale_storage_mb,
+        "bn_and_other_fp32_mb": bn_and_other_fp32_mb,
     }
 
 
 def estimate_activation_compression(model, sample_batch, act_bits, device):
+    """
+    Hooks every ActFakeQuant module and counts how many activation values actually 
+    flow through it during ONE real forward pass on `sample_batch`. Activations 
+    are never saved to disk (they're transient) -- this reports a RUNTIME MEMORY 
+    footprint for one forward pass, fp32 vs act_bits.
+    """
     count = {"n": 0}
     hooks = [m.register_forward_hook(lambda mod, i, o: count.__setitem__("n", count["n"] + o.numel()))
              for m in model.modules() if isinstance(m, ActFakeQuant)]
@@ -398,33 +401,35 @@ def load_state_dict_flexible(ckpt_path):
 # High-Level Pipeline & CLI
 # ---------------------------------------------------------------------------
 def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8,
-                               calib_batches=40, out_path="quantized_int8.pth"):
+                               calib_batches=40, sparsity=0.3):
     from model import MobileNetV2CIFAR
     from data import get_dataloaders
     from utils import accuracy, AverageMeter
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print(f"Loading baseline from {ckpt_path}...")
+    # print(f"Loading baseline from {ckpt_path}...")
     state_dict, baseline_acc = load_state_dict_flexible(ckpt_path)
 
     model = MobileNetV2CIFAR(num_classes=10, dropout=0.2)
     model.load_state_dict(state_dict)
+    # global pruning before quantization
+    model = apply_global_magnitude_pruning(model, sparsity)
     model_fp32 = copy.deepcopy(model)   # untouched reference, for size comparison
 
     train_loader, test_loader = get_dataloaders(data_dir=data_dir, download=False)
 
     cfg = QuantConfig(weight_quant_bits=weight_bits, activation_quant_bits=act_bits,
-                       calibration_batches=calib_batches)   
+                       calibration_batches=calib_batches)
     swap_to_quant_modules(model, cfg)
     attach_block_output_quant(model, cfg.activation_quant_bits)
     model.to(device)
 
-    print(f"Calibrating with {cfg.calibration_batches} batches (from TRAIN data, not test)...")
+    # print(f"Calibrating with {cfg.calibration_batches} batches (from TRAIN data, not test)...")
     calibrate(model, train_loader, device, n_batches=cfg.calibration_batches)
     freeze_all(model)
 
-    print("Evaluating fake-quant model on the held-out test set...")
+    # print("Evaluating fake-quant model on the test dataset...")
     model.eval()
     acc_meter = AverageMeter()
     with torch.no_grad():
@@ -433,38 +438,18 @@ def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8,
             top1, = accuracy(model(images), targets, topk=(1,))
             acc_meter.update(top1, images.size(0))
 
-    print(f"\n--- ACCURACY ---")
-    print(f"Baseline test acc: {baseline_acc if baseline_acc is not None else 'unknown'}")
-    print(f"Quantized test acc: {acc_meter.avg:.2f}%")
-
-    print("\n--- SIZE & COMPRESSION REPORT ---")
-    packed = pack_int8(model)
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    torch.save(packed, out_path)
-
-    report = compression_ratio_report(model_fp32, packed)
-    for k, v in report.items():
-        print(f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}")
-
     sample_batch, _ = next(iter(test_loader))
+    report = compression_ratio_report(model, model_fp32, cfg.weight_quant_bits)
     act_report = estimate_activation_compression(model, sample_batch, cfg.activation_quant_bits, device)
-    print(f"\n--- ACTIVATION FOOTPRINT (per batch) ---")
-    for k, v in act_report.items():
-        print(f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}")
 
-    print(f"\nSaved real int8 weights to: {out_path}")
+    fp32_acc_str = f"{baseline_acc:.2f}%" if isinstance(baseline_acc, (int, float)) else str(baseline_acc)
+    comp_acc_str = f"{acc_meter.avg:.2f}%"
+
+    print(f"fp32 accuracy: {fp32_acc_str} | compressed accuracy: {comp_acc_str}")
+    print(f"fp32 size: {report['fp32_total_mb']:.2f} MB | compressed size (theoretical): {report['quantized_sparse_total_mb']:.2f} MB")
+    print(f"total compression: {report['overall_compression_ratio']:.2f}x")
+    print(f"weight compression: {report['weights_compression_ratio']:.2f}x")
+    print(f"activation compression: {act_report['activation_compression_ratio']:.2f}x")
+
     return {"accuracy": acc_meter.avg, **report, **act_report}
 
-
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Run INT8 Quantization Pipeline")
-    parser.add_argument("--ckpt", type=str, required=True)
-    parser.add_argument("--data_dir", type=str, required=True)
-    parser.add_argument("--w_bits", type=int, default=8)
-    parser.add_argument("--a_bits", type=int, default=8)
-    parser.add_argument("--calib", type=int, default=40)
-    parser.add_argument("--out", type=str, default="quantized_int8.pth")
-    args = parser.parse_args()
-    run_quantization_pipeline(args.ckpt, args.data_dir, args.w_bits, args.a_bits,
-                               args.calib, args.out)

@@ -1,0 +1,360 @@
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 8 | Sparsity = 70%
+==================================================================
+Manual Global Pruning: 1541792/2202560 parameters removed (70.00%). Threshold: 0.002624
+fp32 accuracy: 93.52% | compressed accuracy: 93.36%
+fp32 size: 8.66 MB | compressed size (theoretical): 1.22 MB
+total compression: 7.10x
+weight compression: 9.41x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 8 | Sparsity = 80%
+==================================================================
+Manual Global Pruning: 1762048/2202560 parameters removed (80.00%). Threshold: 0.005184
+fp32 accuracy: 93.52% | compressed accuracy: 93.29%
+fp32 size: 8.66 MB | compressed size (theoretical): 1.01 MB
+total compression: 8.58x
+weight compression: 12.31x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 8 | Sparsity = 85%
+==================================================================
+Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
+fp32 accuracy: 93.52% | compressed accuracy: 92.71%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.90 MB
+total compression: 9.58x
+weight compression: 14.55x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 8 | Sparsity = 90%
+==================================================================
+Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
+fp32 accuracy: 93.52% | compressed accuracy: 12.00%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.80 MB
+total compression: 10.84x
+weight compression: 17.78x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 6 | Sparsity = 70%
+==================================================================
+Manual Global Pruning: 1541792/2202560 parameters removed (70.00%). Threshold: 0.002624
+fp32 accuracy: 93.52% | compressed accuracy: 91.94%
+fp32 size: 8.66 MB | compressed size (theoretical): 1.22 MB
+total compression: 7.10x
+weight compression: 9.41x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 6 | Sparsity = 80%
+==================================================================
+Manual Global Pruning: 1762048/2202560 parameters removed (80.00%). Threshold: 0.005184
+fp32 accuracy: 93.52% | compressed accuracy: 91.91%
+fp32 size: 8.66 MB | compressed size (theoretical): 1.01 MB
+total compression: 8.58x
+weight compression: 12.31x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 6 | Sparsity = 85%
+==================================================================
+Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
+fp32 accuracy: 93.52% | compressed accuracy: 91.12%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.90 MB
+total compression: 9.58x
+weight compression: 14.55x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 6 | Sparsity = 90%
+==================================================================
+Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
+fp32 accuracy: 93.52% | compressed accuracy: 12.85%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.80 MB
+total compression: 10.84x
+weight compression: 17.78x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 4 | Sparsity = 70%
+==================================================================
+Manual Global Pruning: 1541792/2202560 parameters removed (70.00%). Threshold: 0.002624
+fp32 accuracy: 93.52% | compressed accuracy: 49.61%
+fp32 size: 8.66 MB | compressed size (theoretical): 1.22 MB
+total compression: 7.10x
+weight compression: 9.41x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 4 | Sparsity = 80%
+==================================================================
+Manual Global Pruning: 1762048/2202560 parameters removed (80.00%). Threshold: 0.005184
+fp32 accuracy: 93.52% | compressed accuracy: 46.38%
+fp32 size: 8.66 MB | compressed size (theoretical): 1.01 MB
+total compression: 8.58x
+weight compression: 12.31x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 4 | Sparsity = 85%
+==================================================================
+Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
+fp32 accuracy: 93.52% | compressed accuracy: 44.61%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.90 MB
+total compression: 9.58x
+weight compression: 14.55x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 8 | Act Bits = 4 | Sparsity = 90%
+==================================================================
+Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
+fp32 accuracy: 93.52% | compressed accuracy: 12.73%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.80 MB
+total compression: 10.84x
+weight compression: 17.78x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 8 | Sparsity = 70%
+==================================================================
+Manual Global Pruning: 1541792/2202560 parameters removed (70.00%). Threshold: 0.002624
+fp32 accuracy: 93.52% | compressed accuracy: 93.24%
+fp32 size: 8.66 MB | compressed size (theoretical): 1.06 MB
+total compression: 8.16x
+weight compression: 11.43x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 8 | Sparsity = 80%
+==================================================================
+Manual Global Pruning: 1762048/2202560 parameters removed (80.00%). Threshold: 0.005184
+fp32 accuracy: 93.52% | compressed accuracy: 93.15%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.90 MB
+total compression: 9.58x
+weight compression: 14.55x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 8 | Sparsity = 85%
+==================================================================
+Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
+fp32 accuracy: 93.52% | compressed accuracy: 92.97%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.83 MB
+total compression: 10.50x
+weight compression: 16.84x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 8 | Sparsity = 90%
+==================================================================
+Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
+fp32 accuracy: 93.52% | compressed accuracy: 11.51%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.75 MB
+total compression: 11.60x
+weight compression: 20.00x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 6 | Sparsity = 70%
+==================================================================
+Manual Global Pruning: 1541792/2202560 parameters removed (70.00%). Threshold: 0.002624
+fp32 accuracy: 93.52% | compressed accuracy: 92.21%
+fp32 size: 8.66 MB | compressed size (theoretical): 1.06 MB
+total compression: 8.16x
+weight compression: 11.43x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 6 | Sparsity = 80%
+==================================================================
+Manual Global Pruning: 1762048/2202560 parameters removed (80.00%). Threshold: 0.005184
+fp32 accuracy: 93.52% | compressed accuracy: 91.65%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.90 MB
+total compression: 9.58x
+weight compression: 14.55x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 6 | Sparsity = 85%
+==================================================================
+Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
+fp32 accuracy: 93.52% | compressed accuracy: 91.41%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.83 MB
+total compression: 10.50x
+weight compression: 16.84x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 6 | Sparsity = 90%
+==================================================================
+Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
+fp32 accuracy: 93.52% | compressed accuracy: 13.18%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.75 MB
+total compression: 11.60x
+weight compression: 20.00x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 4 | Sparsity = 70%
+==================================================================
+Manual Global Pruning: 1541792/2202560 parameters removed (70.00%). Threshold: 0.002624
+fp32 accuracy: 93.52% | compressed accuracy: 47.50%
+fp32 size: 8.66 MB | compressed size (theoretical): 1.06 MB
+total compression: 8.16x
+weight compression: 11.43x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 4 | Sparsity = 80%
+==================================================================
+Manual Global Pruning: 1762048/2202560 parameters removed (80.00%). Threshold: 0.005184
+fp32 accuracy: 93.52% | compressed accuracy: 41.71%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.90 MB
+total compression: 9.58x
+weight compression: 14.55x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 4 | Sparsity = 85%
+==================================================================
+Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
+fp32 accuracy: 93.52% | compressed accuracy: 43.48%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.83 MB
+total compression: 10.50x
+weight compression: 16.84x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 6 | Act Bits = 4 | Sparsity = 90%
+==================================================================
+Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
+fp32 accuracy: 93.52% | compressed accuracy: 10.72%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.75 MB
+total compression: 11.60x
+weight compression: 20.00x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 8 | Sparsity = 70%
+==================================================================
+Manual Global Pruning: 1541792/2202560 parameters removed (70.00%). Threshold: 0.002624
+fp32 accuracy: 93.52% | compressed accuracy: 88.96%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.89 MB
+total compression: 9.77x
+weight compression: 15.01x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 8 | Sparsity = 80%
+==================================================================
+Manual Global Pruning: 1762048/2202560 parameters removed (80.00%). Threshold: 0.005184
+fp32 accuracy: 93.52% | compressed accuracy: 89.67%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.79 MB
+total compression: 10.90x
+weight compression: 17.94x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 8 | Sparsity = 85%
+==================================================================
+Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
+fp32 accuracy: 93.52% | compressed accuracy: 89.60%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.75 MB
+total compression: 11.63x
+weight compression: 20.08x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 8 | Sparsity = 90%
+==================================================================
+Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
+fp32 accuracy: 93.52% | compressed accuracy: 11.98%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.69 MB
+total compression: 12.48x
+weight compression: 22.87x
+activation compression: 4.00x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 6 | Sparsity = 70%
+==================================================================
+Manual Global Pruning: 1541792/2202560 parameters removed (70.00%). Threshold: 0.002624
+fp32 accuracy: 93.52% | compressed accuracy: 86.92%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.89 MB
+total compression: 9.77x
+weight compression: 15.01x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 6 | Sparsity = 80%
+==================================================================
+Manual Global Pruning: 1762048/2202560 parameters removed (80.00%). Threshold: 0.005184
+fp32 accuracy: 93.52% | compressed accuracy: 86.70%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.79 MB
+total compression: 10.90x
+weight compression: 17.94x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 6 | Sparsity = 85%
+==================================================================
+Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
+fp32 accuracy: 93.52% | compressed accuracy: 86.85%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.75 MB
+total compression: 11.63x
+weight compression: 20.08x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 6 | Sparsity = 90%
+==================================================================
+Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
+fp32 accuracy: 93.52% | compressed accuracy: 12.76%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.69 MB
+total compression: 12.48x
+weight compression: 22.87x
+activation compression: 5.33x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 4 | Sparsity = 70%
+==================================================================
+Manual Global Pruning: 1541792/2202560 parameters removed (70.00%). Threshold: 0.002624
+fp32 accuracy: 93.52% | compressed accuracy: 47.66%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.89 MB
+total compression: 9.77x
+weight compression: 15.01x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 4 | Sparsity = 80%
+==================================================================
+Manual Global Pruning: 1762048/2202560 parameters removed (80.00%). Threshold: 0.005184
+fp32 accuracy: 93.52% | compressed accuracy: 42.93%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.79 MB
+total compression: 10.90x
+weight compression: 17.94x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 4 | Sparsity = 85%
+==================================================================
+Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
+fp32 accuracy: 93.52% | compressed accuracy: 48.50%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.75 MB
+total compression: 11.63x
+weight compression: 20.08x
+activation compression: 8.00x
+
+==================================================================
+ Running: Weight Bits = 4 | Act Bits = 4 | Sparsity = 90%
+==================================================================
+Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
+fp32 accuracy: 93.52% | compressed accuracy: 10.08%
+fp32 size: 8.66 MB | compressed size (theoretical): 0.69 MB
+total compression: 12.48x
+weight compression: 22.87x
+activation compression: 8.00x
