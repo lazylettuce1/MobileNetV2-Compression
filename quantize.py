@@ -50,7 +50,7 @@ class QuantConfig:
 
 
 # ---------------------------------------------------------------------------
-# core int8 math
+# basic quantize, dequantize, and quantize params helpers
 # ---------------------------------------------------------------------------
 def quantize(x, scale, zero_point, qmin, qmax):
     return torch.clamp(torch.round(x / scale + zero_point), qmin, qmax)
@@ -71,6 +71,21 @@ def weight_qparams_per_channel(w, n_bits, eps=1e-8):
 # ---------------------------------------------------------------------------
 # weight quant-aware layers
 # ---------------------------------------------------------------------------
+'''
+We create quantized "equivalents" of Conv2d, Linear, and ReLU(6)
+clarification: the kernels are STILL FP32, they are not custom INT kernels,
+rather, we add extra "freeze", "buffer", "quantize" and "dequantize", methods,
+which help us effectively simulate quantization.
+---
+Since we are not using custom kernels, we do "fake quantization", where the "effect"
+of quantization is simulated by rounding the weights and activations,
+but the compute is still done in FP32. Hence after every forward pass, 
+the activations must be dequantized -> and then quantized, this simulated forcing
+the forward pass results to be in the quantized space.
+Although weights are also "fake", we effectively only need the activations to be quantized,
+since the forward pass output contains both the weights and input activations.
+
+'''
 class QuantConv2d(nn.Conv2d):
     def __init__(self, *args, weight_bits=8, **kwargs):
         super().__init__(*args, **kwargs)
@@ -136,9 +151,15 @@ class ActFakeQuant(nn.Module):
     @torch.no_grad()
     def freeze(self):
         qmax = (1 << self.n_bits) - 1
-        lo = torch.zeros_like(self.min_val)
+        
+        # FIX: Use the actual observed minimum, not zero. 
+        # This properly handles both post-ReLU (min ~ 0) 
+        # and linear bottlenecks (min < 0).
+        lo = self.min_val 
+        
         scale = (self.max_val - lo).clamp_min(1e-8) / qmax
         zp = torch.round(-lo / scale)
+        
         self.register_buffer("scale", scale)
         self.register_buffer("zp", zp)
         self.qmin, self.qmax = 0, qmax
@@ -376,7 +397,7 @@ def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8,
     train_loader, test_loader = get_dataloaders(data_dir=data_dir, download=False)
 
     cfg = QuantConfig(weight_quant_bits=weight_bits, activation_quant_bits=act_bits,
-                       calibration_batches=calib_batches)
+                       calibration_batches=calib_batches)   
     swap_to_quant_modules(model, cfg)
     attach_block_output_quant(model, cfg.activation_quant_bits)
     model.to(device)
