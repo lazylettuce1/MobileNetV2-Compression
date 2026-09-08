@@ -4,7 +4,7 @@
 ==================================================================
 Manual Global Pruning: 1651920/2202560 parameters removed (75.00%). Threshold: 0.003697
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 17 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 93.47%
+fp32 accuracy: 93.52% | compressed accuracy: 93.36%
 fp32 size: 8.66 MB | compressed size (theoretical): 1.01 MB
 total compression: 8.61x
 weight compression: 10.37x
@@ -15,7 +15,7 @@ activation compression: 4.00x
 ==================================================================
 Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 18 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 92.75%
+fp32 accuracy: 93.52% | compressed accuracy: 92.87%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.80 MB
 total compression: 10.88x
 weight compression: 14.00x
@@ -26,7 +26,7 @@ activation compression: 4.00x
 ==================================================================
 Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 18 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 15.95%
+fp32 accuracy: 93.52% | compressed accuracy: 15.91%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.69 MB
 total compression: 12.54x
 weight compression: 16.97x
@@ -36,8 +36,8 @@ activation compression: 4.00x
  Running: Weight Bits = 8 | Act Bits = 6 | Sparsity = 75%
 ==================================================================
 Manual Global Pruning: 1651920/2202560 parameters removed (75.00%). Threshold: 0.003697
-WARNING: bias would clip at bias_bits=2 (derived scale needs >= 15 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 91.74%
+WARNING: bias would clip at bias_bits=2 (derived scale needs >= 16 bits) -- clamping, expect accuracy loss
+fp32 accuracy: 93.52% | compressed accuracy: 91.73%
 fp32 size: 8.66 MB | compressed size (theoretical): 1.01 MB
 total compression: 8.61x
 weight compression: 10.37x
@@ -48,7 +48,7 @@ activation compression: 5.33x
 ==================================================================
 Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 16 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 91.24%
+fp32 accuracy: 93.52% | compressed accuracy: 91.35%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.80 MB
 total compression: 10.88x
 weight compression: 14.00x
@@ -59,7 +59,7 @@ activation compression: 5.33x
 ==================================================================
 Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 16 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 15.65%
+fp32 accuracy: 93.52% | compressed accuracy: 17.41%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.69 MB
 total compression: 12.54x
 weight compression: 16.97x
@@ -70,7 +70,7 @@ activation compression: 5.33x
 ==================================================================
 Manual Global Pruning: 1651920/2202560 parameters removed (75.00%). Threshold: 0.003697
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 13 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 48.99%
+fp32 accuracy: 93.52% | compressed accuracy: 53.49%
 fp32 size: 8.66 MB | compressed size (theoretical): 1.01 MB
 total compression: 8.61x
 weight compression: 10.37x
@@ -81,7 +81,7 @@ activation compression: 8.00x
 ==================================================================
 Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 14 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 44.19%
+fp32 accuracy: 93.52% | compressed accuracy: 37.91%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.80 MB
 total compression: 10.88x
 weight compression: 14.00x
@@ -92,7 +92,7 @@ activation compression: 8.00x
 ==================================================================
 Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 14 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 12.09%
+fp32 accuracy: 93.52% | compressed accuracy: 11.07%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.69 MB
 total compression: 12.54x
 weight compression: 16.97x
@@ -102,8 +102,8 @@ activation compression: 8.00x
  Running: Weight Bits = 6 | Act Bits = 8 | Sparsity = 75%
 ==================================================================
 Manual Global Pruning: 1651920/2202560 parameters removed (75.00%). Threshold: 0.003697
-WARNING: bias would clip at bias_bits=2 (derived scale needs >= 15 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 93.26%
+WARNING: bias would clip at bias_bits=2 (derived scale needs >= 16 bits) -- clamping, expect accuracy loss
+fp32 accuracy: 93.52% | compressed accuracy: 93.21%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.87 MB
 total compression: 9.95x
 weight compression: 12.45x
@@ -114,7 +114,7 @@ activation compression: 4.00x
 ==================================================================
 Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 16 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 92.76%
+fp32 accuracy: 93.52% | compressed accuracy: 92.88%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.71 MB
 total compression: 12.15x
 weight compression: 16.25x
@@ -125,7 +125,7 @@ activation compression: 4.00x
 ==================================================================
 Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 16 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 16.08%
+fp32 accuracy: 93.52% | compressed accuracy: 16.15%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.63 MB
 total compression: 13.65x
 weight compression: 19.17x
@@ -135,8 +135,8 @@ activation compression: 4.00x
  Running: Weight Bits = 6 | Act Bits = 6 | Sparsity = 75%
 ==================================================================
 Manual Global Pruning: 1651920/2202560 parameters removed (75.00%). Threshold: 0.003697
-WARNING: bias would clip at bias_bits=2 (derived scale needs >= 13 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 91.44%
+WARNING: bias would clip at bias_bits=2 (derived scale needs >= 14 bits) -- clamping, expect accuracy loss
+fp32 accuracy: 93.52% | compressed accuracy: 91.59%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.87 MB
 total compression: 9.95x
 weight compression: 12.45x
@@ -147,7 +147,7 @@ activation compression: 5.33x
 ==================================================================
 Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 14 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 92.05%
+fp32 accuracy: 93.52% | compressed accuracy: 91.54%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.71 MB
 total compression: 12.15x
 weight compression: 16.25x
@@ -158,7 +158,7 @@ activation compression: 5.33x
 ==================================================================
 Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 14 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 14.99%
+fp32 accuracy: 93.52% | compressed accuracy: 17.05%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.63 MB
 total compression: 13.65x
 weight compression: 19.17x
@@ -169,7 +169,7 @@ activation compression: 5.33x
 ==================================================================
 Manual Global Pruning: 1651920/2202560 parameters removed (75.00%). Threshold: 0.003697
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 11 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 44.28%
+fp32 accuracy: 93.52% | compressed accuracy: 53.04%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.87 MB
 total compression: 9.95x
 weight compression: 12.45x
@@ -180,7 +180,7 @@ activation compression: 8.00x
 ==================================================================
 Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 12 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 49.97%
+fp32 accuracy: 93.52% | compressed accuracy: 49.73%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.71 MB
 total compression: 12.15x
 weight compression: 16.25x
@@ -191,7 +191,7 @@ activation compression: 8.00x
 ==================================================================
 Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 12 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 12.15%
+fp32 accuracy: 93.52% | compressed accuracy: 11.47%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.63 MB
 total compression: 13.65x
 weight compression: 19.17x
@@ -202,7 +202,7 @@ activation compression: 8.00x
 ==================================================================
 Manual Global Pruning: 1651920/2202560 parameters removed (75.00%). Threshold: 0.003697
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 13 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 89.20%
+fp32 accuracy: 93.52% | compressed accuracy: 89.41%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.73 MB
 total compression: 11.93x
 weight compression: 15.85x
@@ -213,7 +213,7 @@ activation compression: 4.00x
 ==================================================================
 Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 14 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 89.56%
+fp32 accuracy: 93.52% | compressed accuracy: 89.70%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.63 MB
 total compression: 13.78x
 weight compression: 19.41x
@@ -224,7 +224,7 @@ activation compression: 4.00x
 ==================================================================
 Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 14 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 18.49%
+fp32 accuracy: 93.52% | compressed accuracy: 18.77%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.58 MB
 total compression: 15.00x
 weight compression: 22.02x
@@ -235,7 +235,7 @@ activation compression: 4.00x
 ==================================================================
 Manual Global Pruning: 1651920/2202560 parameters removed (75.00%). Threshold: 0.003697
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 11 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 86.47%
+fp32 accuracy: 93.52% | compressed accuracy: 86.76%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.73 MB
 total compression: 11.93x
 weight compression: 15.85x
@@ -246,7 +246,7 @@ activation compression: 5.33x
 ==================================================================
 Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 12 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 87.50%
+fp32 accuracy: 93.52% | compressed accuracy: 87.22%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.63 MB
 total compression: 13.78x
 weight compression: 19.41x
@@ -257,7 +257,7 @@ activation compression: 5.33x
 ==================================================================
 Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 12 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 19.70%
+fp32 accuracy: 93.52% | compressed accuracy: 21.76%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.58 MB
 total compression: 15.00x
 weight compression: 22.02x
@@ -268,7 +268,7 @@ activation compression: 5.33x
 ==================================================================
 Manual Global Pruning: 1651920/2202560 parameters removed (75.00%). Threshold: 0.003697
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 9 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 38.62%
+fp32 accuracy: 93.52% | compressed accuracy: 51.08%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.73 MB
 total compression: 11.93x
 weight compression: 15.85x
@@ -279,7 +279,7 @@ activation compression: 8.00x
 ==================================================================
 Manual Global Pruning: 1872176/2202560 parameters removed (85.00%). Threshold: 0.007583
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 10 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 50.77%
+fp32 accuracy: 93.52% | compressed accuracy: 42.49%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.63 MB
 total compression: 13.78x
 weight compression: 19.41x
@@ -290,7 +290,7 @@ activation compression: 8.00x
 ==================================================================
 Manual Global Pruning: 1982303/2202560 parameters removed (90.00%). Threshold: 0.012473
 WARNING: bias would clip at bias_bits=2 (derived scale needs >= 10 bits) -- clamping, expect accuracy loss
-fp32 accuracy: 93.52% | compressed accuracy: 14.44%
+fp32 accuracy: 93.52% | compressed accuracy: 13.71%
 fp32 size: 8.66 MB | compressed size (theoretical): 0.58 MB
 total compression: 15.00x
 weight compression: 22.02x

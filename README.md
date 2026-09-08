@@ -1,3 +1,4 @@
+
 # MobileNetV2 CIFAR-10 Compression
 
 ## Environment
@@ -21,7 +22,7 @@ bringing total downsampling to 8x -> a 4x4 final feature map. See the
 docstring in `model.py` for the exact layers touched and the reasoning.
 
 1. Magnitude based pruning seems to be working better than Hessian-based, need to look into why,
-2. ~~Batch Norm parameters are quantized seperately, since they are more sensitive~~ — reverted: BatchNorm's `weight` is now quantized exactly like Conv2d/Linear (same `weight_bits`, same per-channel scheme), no separate BN precision mode. In practice BatchNorm isn't especially sensitive to this, so the earlier separate fp16/fp8/fp4/int handling was unnecessary complexity.
+2. Batch Norm parameters are generally expected to be more sensitive, but did not show any particular during quantization.
 
 
 ## Quantize Option
@@ -29,8 +30,9 @@ docstring in `model.py` for the exact layers touched and the reasoning.
 python quantize.py \
   --ckpt-path ./outputs/baseline/best.pth \
   --data-dir ./data \
-  --weight-bits 4 \
-  --act-bits 6 \
+  --weight-bits 6 \
+  --bias-bits 2 \
+  --act-bits 8 \
   --calib-batches 40 \
   --sparsity 0.85 \
   --pruning-method magnitude
@@ -38,18 +40,17 @@ python quantize.py \
 Equivalent Python API:
 ```python
 from quantize import run_quantization_pipeline
-
-baseline_ckpt = "./outputs/baseline/best.pth"
-DATA_DIR = "./data"
+baseline_ckpt = "/kaggle/working/MobileNetV2-Compression/outputs/baseline/best.pth"
 
 quant_rpt = run_quantization_pipeline(
-    ckpt_path=baseline_ckpt,
-    data_dir=DATA_DIR,
-    weight_bits=4,
-    act_bits=6,
-    calib_batches=40,
-    sparsity=0.85,
-    pruning_method='magnitude',
+        ckpt_path=baseline_ckpt,
+        data_dir=DATA_DIR,
+        weight_bits=6,
+        bias_bits=2,
+        act_bits=8,
+        calib_batches=40,
+        sparsity=0.85,
+        pruning_method='magnitude'
 )
 ```
 
@@ -65,17 +66,7 @@ quant_rpt = run_quantization_pipeline(
 | `pruning_method` | `"magnitude"` | `"magnitude"` — global unstructured pruning by `\|w\|`. `"hessian"` — Optimal Brain Damage saliency (`0.5 * H_ii * w_i^2`), where `H_ii` is an empirical-Fisher diagonal estimated from `calib_batches` of real training data (`compute_fisher_diagonal` + `apply_hessian_pruning`) — costs one extra forward+backward pass per calibration batch, but ranks a weight by how much removing it actually moves the loss, not just its magnitude |
 | `download` | `False` | If set, downloads CIFAR-10 into `data_dir` if not already present |
 
-**BatchNorm gets no special-cased quantization.** `swap_to_quant_modules`
-replaces every `nn.BatchNorm2d` with a `QuantBatchNorm2d` that quantizes its
-`weight` (gamma) with the exact same per-channel symmetric scheme and the
-same `weight_bits` as `QuantConv2d`/`QuantLinear` — there's no separate
-`bn_mode`/`bn_bits` knob. `bias` (beta) stays fp32, mirroring how
-`QuantConv2d`/`QuantLinear` also leave their bias unquantized;
-`running_mean`/`running_var` are buffers, not weights, and are untouched.
-(An earlier iteration gave BatchNorm its own separate fp16/fp8/fp4/int
-precision mode on the theory that it's unusually sensitive — that turned out
-not to be true in practice, so it's back to being treated like every other
-weight-bearing layer.)
+
 
 **Pipeline steps** (`run_quantization_pipeline`):
 1. Loads the baseline checkpoint (`state_dict` or wrapped dict) and moves the model to `device`
@@ -88,10 +79,6 @@ weight-bearing layer.)
 8. Evaluates on the test set and reports accuracy, size, and compression ratios
 
 ## Running Locally vs. Kaggle
-This repo was originally driven from a Kaggle notebook (cloning the repo into
-`/kaggle/working/...` and calling `run_training` / `run_quantization_pipeline`
-directly from notebook cells). Both scripts also work as plain CLIs — that's
-now the primary way to run them locally:
 
 - **Device handling needs no changes.** Both `train.py` and `quantize.py`
   compute `device = "cuda" if torch.cuda.is_available() else "cpu"` themselves
@@ -184,14 +171,3 @@ python train.py --epochs 50 --out-dir ./outputs/finetune \
 Checkpoints are written to `<out_dir>/best.pth` (highest test top-1 so far)
 and `<out_dir>/last.pth` (most recent epoch) — e.g. `./outputs/baseline/best.pth`.
 
-## General Keynotes
-- **Device handling**: Both scripts auto-detect `cuda`/`cpu` — no code changes needed to run locally without a GPU. In `quantize.py` the model is moved to `device` *twice*: once right after loading (so Hessian pruning's forward/backward passes and magnitude pruning both run on `device`), and again after `swap_to_quant_modules`/`attach_block_output_quant`, since those construct brand-new `QuantConv2d`/`QuantLinear`/`QuantBatchNorm2d`/`ActFakeQuant` submodules on CPU by default — the second `.to(device)` sweeps those along with everything else. This is intentional, not a leftover bug; a CPU-only run will just be slower, not broken.
-- **Checkpoint format**: Checkpoints saved by `train.py` contain `state_dict`, `optimizer_state_dict`, `scaler_state_dict`, `best_acc`, and `config`. `load_state_dict_flexible()` in `quantize.py` tolerates both this wrapped-dict format and a raw `state_dict`.
-- **Quantization is fake-quant only**: weights and activations are rounded/dequantized in-place to *simulate* quantization; compute still runs in FP32 — there are no custom INT kernels, so quantized runs are not faster, only smaller (as reported by `compression_ratio_report`).
-- **Data-dir reuse between train and quantize**: `quantize.py` defaults to `download=False` because it's normally pointed at the same `data_dir` a prior `train.py --download` run already populated. Point both scripts at the same `--data-dir` unless you want CIFAR-10 downloaded twice.
-- **`--use-wandb`**: requires `pip install wandb` and `wandb login` (or `WANDB_API_KEY` set) before running, or `train.py` will raise on `wandb.init(...)`.
-- **Reproducibility**: seed is fixed via `utils.set_seed`; `cudnn.deterministic=True` trades throughput for exact reproducibility (safe to run even without a GPU present).
-- **Outputs**:
-  - `<out_dir>/log.csv` — per-epoch train/test loss & top-1 accuracy
-  - `<out_dir>/best.pth` — best checkpoint by test top-1
-  - `<out_dir>/last.pth` — most recent epoch's checkpoint
