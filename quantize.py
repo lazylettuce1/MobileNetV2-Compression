@@ -486,11 +486,12 @@ def load_state_dict_flexible(ckpt_path):
 # ---------------------------------------------------------------------------
 def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, bias_bits=8, act_bits=8,
                                calib_batches=40, sparsity=0.3,
-                               pruning_method="magnitude", download=False):
+                               pruning_method="magnitude", download=False, seed=42):
     from model import MobileNetV2CIFAR
     from data import get_dataloaders
-    from utils import accuracy, AverageMeter
+    from utils import accuracy, AverageMeter, set_seed
 
+    set_seed(seed)  # calibration draws shuffled batches from train_loader -- fix that draw too
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     state_dict, baseline_acc = load_state_dict_flexible(ckpt_path)
@@ -558,6 +559,7 @@ def _parse_args():
     p.add_argument("--sparsity", type=float, default=0.3)
     p.add_argument("--pruning-method", type=str, default="magnitude", choices=["magnitude", "hessian"])
     p.add_argument("--download", action="store_true", default=False)
+    p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
 
 
@@ -573,4 +575,5 @@ if __name__ == "__main__":
         sparsity=args.sparsity,
         pruning_method=args.pruning_method,
         download=args.download,
+        seed=args.seed,
     )
