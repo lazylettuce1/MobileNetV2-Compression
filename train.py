@@ -42,6 +42,13 @@ class TrainConfig:
     resume: Optional[str] = None
     download: bool = False      # explicit switch — see note below on first-run vs later
 
+import copy
+
+def mixup(images, targets, alpha=0.2):
+    lam = torch.distributions.Beta(alpha, alpha).sample().item()
+    perm = torch.randperm(images.size(0), device=images.device)
+    mixed_images = lam * images + (1 - lam) * images[perm]
+    return mixed_images, targets, targets[perm], lam
 
 def build_scheduler(optimizer, warmup_epochs, total_epochs, steps_per_epoch):
     """Linear warmup -> cosine decay to 0, stepped once per batch."""
@@ -57,7 +64,7 @@ def build_scheduler(optimizer, warmup_epochs, total_epochs, steps_per_epoch):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
-def run_epoch(model, loader, criterion, device, optimizer=None, scheduler=None, scaler=None, desc="epoch"):
+def run_epoch(model, loader, criterion, device, optimizer=None, scheduler=None, scaler=None, desc="epoch", use_mixup=False, mixup_alpha=0.2):
     """One pass over `loader`. Pass optimizer+scheduler+scaler to train; omit all three to evaluate."""
     train_mode = optimizer is not None
     model.train(train_mode)
@@ -68,6 +75,9 @@ def run_epoch(model, loader, criterion, device, optimizer=None, scheduler=None, 
         for images, targets in pbar:
             images = images.to(device, non_blocking=True)
             targets = targets.to(device, non_blocking=True)
+
+            if train_mode and use_mixup:
+                images, y_a, y_b, lam = mixup(images, targets, mixup_alpha)
 
             with torch.amp.autocast("cuda", enabled=train_mode and scaler is not None and scaler.is_enabled()):
                 outputs = model(images)
@@ -129,16 +139,17 @@ def run_training(cfg: TrainConfig):
 
     start_epoch, best_acc = 1, 0.0
     if cfg.resume:
-        print(f"Resuming from {cfg.resume}")
+        print(f"Loading weights for fine-tuning from {cfg.resume}")
         ckpt = torch.load(cfg.resume, map_location=device)
+        
+        # Load ONLY the model weights
         model.load_state_dict(ckpt["state_dict"])
-        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
-        scaler.load_state_dict(ckpt["scaler_state_dict"])
-        best_acc = ckpt["best_acc"]
-        start_epoch = ckpt["epoch"] + 1
-        for _ in range(ckpt["global_step"]):
-            scheduler.step()
-        print(f"Resumed at epoch {start_epoch}, best_acc so far {best_acc:.2f}%")
+        
+        # Reset epoch count and accuracy for the new fine-tuning run
+        start_epoch = 1
+        best_acc = 0.0
+        
+        print("Model weights loaded. Starting fine-tuning from epoch 1.")
 
     history = []
     for epoch in range(start_epoch, cfg.epochs + 1):
