@@ -14,13 +14,15 @@ pip install torch torchvision
 pip install wandb
 ```
 
-## Architecture
+## Model Architecture
 Stock torchvision MobileNetV2 downsamples 32x total, which collapses a 32x32
 CIFAR-10 image to a 1x1 feature map. `model.py` removes two of the five
 stride-2 steps (the stem conv and the first block of the 24-channel stage),
 bringing total downsampling to 8x -> a 4x4 final feature map. See the
 docstring in `model.py` for the exact layers touched and the reasoning.
 
+
+**Global, magnitude-based pruning and Quantization are the two compression techniques implemented in this project.**
 1. Magnitude based pruning seems to be working better than Hessian-based, need to look into why,
 2. Batch Norm parameters are generally expected to be more sensitive, but did not show any particular during quantization.
 
