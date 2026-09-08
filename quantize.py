@@ -8,10 +8,16 @@ quantize.py — INT8 post-training quantization for MobileNetV2-CIFAR.
 
 Design choices:
   - Per-channel weights, per-tensor activations
-  - BatchNorm layers are replaced with quantized-counterparts,
-    since it has few parameters, and is not a bottleneck. Supported
-    bn_mode values: "fp16", "fp8", "fp4", "int", "none" — see
-    quantize_batchnorm.
+  - BatchNorm gets NO special treatment: swap_to_quant_modules replaces
+    every nn.BatchNorm2d with a QuantBatchNorm2d that quantizes its
+    `weight` (gamma) with the exact same per-channel symmetric scheme and
+    the same `weight_bits` used for QuantConv2d/QuantLinear -- there is no
+    separate BN precision knob. `bias` (beta) stays fp32, mirroring how
+    QuantConv2d/QuantLinear also leave their bias unquantized.
+    `running_mean`/`running_var` are buffers, not weights, and are left
+    untouched. In practice BatchNorm turned out to not be especially
+    sensitive to this, so quantizing it uniformly with everything else is
+    simpler and works fine.
   - MobileNetV2's linear-bottleneck projection convs have no ReLU6 after
     them (Sandler et al. 2018), and residual-add outputs pass through no
     activation module at all — swap_to_quant_modules's isinstance-based
@@ -58,8 +64,6 @@ class QuantConfig:
     sparsity: float = 0.3
     weight_quant_bits: int = 8
     activation_quant_bits: int = 8
-    bn_quant_mode: str = "fp16"  # Options: "fp16", "fp8", "fp4", "int", "none"
-    bn_bits: int = 16            # only consulted when bn_quant_mode == "int"
     calibration_batches: int = 40   # confirmed better than 20 empirically
 
 
@@ -75,115 +79,27 @@ def dequantize(q, scale, zero_point):
 
 
 def weight_qparams_per_channel(w, n_bits, eps=1e-8):
-    """One scale per output channel (dim 0). Symmetric -> zero_point always 0."""
-    reduce_dims = list(range(1, w.dim()))
-    max_abs = w.abs().amax(dim=reduce_dims, keepdim=True).clamp_min(eps)
+    """One scale per output channel (dim 0). Symmetric -> zero_point always 0.
+    For a 1-D weight (BatchNorm's per-channel `weight`/gamma), dim 0 IS every
+    element, so this reduces to one scale per element -- no special-casing
+    needed elsewhere for BatchNorm vs. Conv2d/Linear."""
+    if w.dim() > 1:
+        reduce_dims = list(range(1, w.dim()))
+        max_abs = w.abs().amax(dim=reduce_dims, keepdim=True).clamp_min(eps)
+    else:
+        max_abs = w.abs().clamp_min(eps)
     qmax = (1 << (n_bits - 1)) - 1
     return max_abs / qmax, -qmax, qmax
-
-
-def quantize_to_minifloat(x, exp_bits, mantissa_bits):
-    """
-    Fake-quantizes `x` to a low-precision FLOATING-POINT format with 1 sign
-    bit, `exp_bits` exponent bits, and `mantissa_bits` mantissa bits (e.g.
-    exp_bits=4, mantissa_bits=3 -> 8-bit "E4M3", the common fp8 layout;
-    exp_bits=2, mantissa_bits=1 -> 4-bit "E2M1", a common fp4 layout).
-
-    No native torch fp8/fp4 dtype is used, so this runs identically on CPU
-    and GPU regardless of torch version / hardware support: for each element
-    we pick the representable power-of-two exponent, then round the mantissa
-    to `mantissa_bits` bits at that exponent's step size. Same fake-quant
-    philosophy as the rest of this file — the VALUE is constrained to what
-    the target format could represent, but compute stays in fp32.
-    """
-    bias = (1 << (exp_bits - 1)) - 1
-    max_exp = (1 << exp_bits) - 1 - bias
-    min_exp = 1 - bias  # smallest normal exponent (subnormals collapse to this grid)
-
-    sign = torch.sign(x)
-    x_abs = x.abs()
-
-    max_normal = (2 - 2.0 ** -mantissa_bits) * (2.0 ** max_exp)
-    x_abs = x_abs.clamp(max=max_normal)
-
-    safe_abs = x_abs.clamp_min(2.0 ** min_exp * 2.0 ** -mantissa_bits)  # avoid log2(0)
-    exponent = torch.floor(torch.log2(safe_abs)).clamp(min=min_exp, max=max_exp)
-
-    step = 2.0 ** (exponent - mantissa_bits)
-    rounded = torch.round(x_abs / step) * step
-
-    return torch.where(x_abs == 0, torch.zeros_like(x_abs), sign * rounded)
-
-
-_BN_MODE_BYTES_PER_ELEM = {"fp16": 2, "fp8": 1, "fp4": 0.5}
-_BN_MODE_BIT_LABEL = {"fp16": 16, "fp8": 8, "fp4": 4}
-
-
-def quantize_batchnorm(model, mode="fp16", bits=16):
-    """
-    mode="fp16": halves storage via true float16 conversion, no calibration needed.
-    mode="fp8":  simulates an 8-bit float (E4M3: 1 sign + 4 exponent + 3
-                 mantissa bits) via quantize_to_minifloat.
-    mode="fp4":  simulates a 4-bit float (E2M1: 1 sign + 2 exponent + 1
-                 mantissa bit) the same way. Very aggressive — expect BN
-                 weight/bias drift to start hurting accuracy at this width.
-    mode="int":  fixed-point quantization at `bits`, per-tensor (BN layers are
-                 small enough that per-channel granularity isn't worth the
-                 added scale-storage overhead here).
-    Excludes running_mean/running_var by default (see note on risk above) and
-    always excludes num_batches_tracked (a training-only counter, not a value
-    to compress).
-    """
-    stats = {"n_bn_layers": 0, "bytes_before": 0, "bytes_after": 0}
-
-    if mode is None or mode == "none":
-        return stats
-
-    for m in model.modules():
-        if isinstance(m, nn.BatchNorm2d):
-            stats["n_bn_layers"] += 1
-            for pname in ("weight", "bias"):
-                p = getattr(m, pname)
-                if p is None:
-                    continue
-                stats["bytes_before"] += p.numel() * 4
-
-                if mode == "fp16":
-                    p.data = p.data.half().float()   # round-trip through fp16 to SIMULATE the
-                                                     # precision loss; .float() keeps the actual
-                                                     # forward pass running in fp32 arithmetic,
-                                                     # same fake-quant philosophy as everywhere else
-                    stats["bytes_after"] += p.numel() * _BN_MODE_BYTES_PER_ELEM["fp16"]
-
-                elif mode == "fp8":
-                    p.data = quantize_to_minifloat(p.data, exp_bits=4, mantissa_bits=3)
-                    stats["bytes_after"] += p.numel() * _BN_MODE_BYTES_PER_ELEM["fp8"]
-
-                elif mode == "fp4":
-                    p.data = quantize_to_minifloat(p.data, exp_bits=2, mantissa_bits=1)
-                    stats["bytes_after"] += p.numel() * _BN_MODE_BYTES_PER_ELEM["fp4"]
-
-                elif mode == "int":
-                    scale, qmin, qmax = weight_qparams_per_channel(p.data.unsqueeze(-1), bits)
-                    q = quantize(p.data.unsqueeze(-1), scale, 0, qmin, qmax)
-                    p.data = dequantize(q, scale, 0).squeeze(-1)
-                    stats["bytes_after"] += p.numel() * bits / 8
-
-    label_bits = _BN_MODE_BIT_LABEL.get(mode, bits if mode == "int" else "?")
-    print(f"BatchNorm quantization ({mode}, {label_bits}-bit): "
-          f"{stats['n_bn_layers']} layers, "
-          f"{stats['bytes_before']/1024:.1f} KB -> {stats['bytes_after']/1024:.1f} KB")
-    return stats
 
 
 # ---------------------------------------------------------------------------
 # weight quant-aware layers
 # ---------------------------------------------------------------------------
 '''
-We create quantized "equivalents" of Conv2d, Linear, and ReLU(6)
-clarification: the kernels are STILL FP32, they are not custom INT kernels,
-rather, we add extra "freeze", "buffer", "quantize" and "dequantize", methods,
-which help us effectively simulate quantization.
+We create quantized "equivalents" of Conv2d, Linear, BatchNorm2d, and
+ReLU(6). Clarification: the kernels are STILL FP32, they are not custom INT
+kernels, rather, we add extra "freeze", "buffer", "quantize" and
+"dequantize", methods, which help us effectively simulate quantization.
 ---
 Since we are not using custom kernels, we do "fake quantization", where the "effect"
 of quantization is simulated by rounding the weights and activations,
@@ -236,6 +152,33 @@ class QuantLinear(nn.Linear):
 
     def forward(self, x):
         return F.linear(x, self.weight, self.bias)
+
+
+class QuantBatchNorm2d(nn.BatchNorm2d):
+    """BatchNorm2d with its affine `weight` (gamma) quantized exactly like
+    QuantConv2d/QuantLinear -- same per-channel symmetric scheme, same
+    `weight_bits`, no separate BN precision knob. `bias` (beta) stays fp32,
+    same as QuantConv2d/QuantLinear leaving their bias unquantized.
+    `running_mean`/`running_var`/`num_batches_tracked` are untouched."""
+    def __init__(self, *args, weight_bits=8, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.weight_bits = weight_bits
+        self.frozen = False
+
+    @torch.no_grad()
+    def freeze(self):
+        if self.weight is None:  # affine=False -- nothing to quantize
+            self.frozen = True
+            return
+        scale, qmin, qmax = weight_qparams_per_channel(self.weight, self.weight_bits)
+        self.register_buffer("w_scale", scale)
+        self.qmin, self.qmax = qmin, qmax
+        q = quantize(self.weight, scale, 0, qmin, qmax)
+        self.weight.data.copy_(dequantize(q, scale, 0))
+        self.frozen = True
+
+    def forward(self, x):
+        return super().forward(x)
 
 
 class ActFakeQuant(nn.Module):
@@ -390,8 +333,10 @@ def apply_global_magnitude_pruning(model, sparsity=0.3):
 # model surgery
 # ---------------------------------------------------------------------------
 def swap_to_quant_modules(model, cfg: QuantConfig):
-    """Applied uniformly to every Conv2d/Linear/ReLU(6). Structurally cannot
-    reach linear-bottleneck/residual outputs — see attach_block_output_quant."""
+    """Applied uniformly to every Conv2d/Linear/BatchNorm2d/ReLU(6) -- same
+    weight_bits for all of them, no per-layer-type exceptions. Structurally
+    cannot reach linear-bottleneck/residual outputs — see
+    attach_block_output_quant."""
     for name, m in list(model.named_children()):
         swap_to_quant_modules(m, cfg)
 
@@ -411,6 +356,19 @@ def swap_to_quant_modules(model, cfg: QuantConfig):
             q.weight.data.copy_(m.weight.data)
             if m.bias is not None:
                 q.bias.data.copy_(m.bias.data)
+            setattr(model, name, q)
+
+        elif isinstance(m, nn.BatchNorm2d):
+            q = QuantBatchNorm2d(m.num_features, eps=m.eps, momentum=m.momentum,
+                                  affine=m.affine, track_running_stats=m.track_running_stats,
+                                  weight_bits=cfg.weight_quant_bits)
+            if m.affine:
+                q.weight.data.copy_(m.weight.data)
+                q.bias.data.copy_(m.bias.data)
+            if m.track_running_stats:
+                q.running_mean.data.copy_(m.running_mean.data)
+                q.running_var.data.copy_(m.running_var.data)
+                q.num_batches_tracked.data.copy_(m.num_batches_tracked.data)
             setattr(model, name, q)
 
         elif isinstance(m, (nn.ReLU, nn.ReLU6)):
@@ -459,7 +417,7 @@ def calibrate(model, loader, device, n_batches=40):
 
 def freeze_all(model):
     for m in model.modules():
-        if isinstance(m, (QuantConv2d, QuantLinear, ActFakeQuant)):
+        if isinstance(m, (QuantConv2d, QuantLinear, QuantBatchNorm2d, ActFakeQuant)):
             m.freeze()
 
 
@@ -475,10 +433,12 @@ def fp32_size_mb(model):
     return total / (1024 ** 2)
 
 
-def compression_ratio_report(model, model_fp32, weight_bits, bn_mode="fp16", bn_bits=16):
+def compression_ratio_report(model, model_fp32, weight_bits):
     """
     Calculates size reflecting both uniform bit-width quantization
-    and non-zero weight counts resulting from pruning.
+    and non-zero weight counts resulting from pruning. QuantConv2d,
+    QuantLinear, and QuantBatchNorm2d are all tallied identically here --
+    BatchNorm gets no special-cased accounting either.
     """
     fp32_mb = fp32_size_mb(model_fp32)
 
@@ -489,7 +449,7 @@ def compression_ratio_report(model, model_fp32, weight_bits, bn_mode="fp16", bn_
 
     # 1. Tally parameters and non-zero elements
     for name, m in model.named_modules():
-        if isinstance(m, (QuantConv2d, QuantLinear)):
+        if isinstance(m, (QuantConv2d, QuantLinear, QuantBatchNorm2d)):
             n_layers += 1
             n_scales += m.w_scale.numel()
             quantized_names.add(name)
@@ -500,22 +460,11 @@ def compression_ratio_report(model, model_fp32, weight_bits, bn_mode="fp16", bn_
             total_quant_elements += total_els
             nonzero_quant_elements += nnz
 
-    # 2. Unquantized parameters (BatchNorms, unquantized biases, etc.)
-    bn_modules = {name for name, m in model.named_modules() if isinstance(m, nn.BatchNorm2d)}
-
+    # 2. Unquantized parameters (unquantized biases, running stats, etc.)
     for key, tensor in model.state_dict().items():
         owner = key.rsplit(".", 1)[0]
-        param_name = key.rsplit(".", 1)[-1]
         if owner not in quantized_names:
-            if owner in bn_modules and param_name in ("weight", "bias"):
-                if bn_mode in _BN_MODE_BYTES_PER_ELEM:
-                    other_bytes += tensor.numel() * _BN_MODE_BYTES_PER_ELEM[bn_mode]
-                elif bn_mode == "int":
-                    other_bytes += tensor.numel() * (bn_bits / 8)
-                else:
-                    other_bytes += tensor.numel() * tensor.element_size()
-            else:
-                other_bytes += tensor.numel() * tensor.element_size()
+            other_bytes += tensor.numel() * tensor.element_size()
 
     # 3. Memory footprint calculations:
     # - Non-zero weights store values at `weight_bits`
@@ -525,8 +474,6 @@ def compression_ratio_report(model, model_fp32, weight_bits, bn_mode="fp16", bn_
 
     scale_storage_mb = (n_scales * 4) / (1024 ** 2)     # FP32 scale buffers
     bn_and_other_fp32_mb = other_bytes / (1024 ** 2)
-    print("number of scales: ", n_scales)
-    print("other fp32 params: ", other_bytes)
 
     theoretical_total_mb = quantized_weights_only_mb + scale_storage_mb + bn_and_other_fp32_mb
 
@@ -597,9 +544,8 @@ def load_state_dict_flexible(ckpt_path):
 # High-Level Pipeline & CLI
 # ---------------------------------------------------------------------------
 def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8,
-                               bn_mode="fp16", bn_bits=16, calib_batches=40,
-                               sparsity=0.3, pruning_method="magnitude",
-                               download=False):
+                               calib_batches=40, sparsity=0.3,
+                               pruning_method="magnitude", download=False):
     from model import MobileNetV2CIFAR
     from data import get_dataloaders
     from utils import accuracy, AverageMeter
@@ -634,14 +580,12 @@ def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8,
     model_fp32 = copy.deepcopy(model)   # untouched reference, for size comparison
 
     cfg = QuantConfig(weight_quant_bits=weight_bits, activation_quant_bits=act_bits,
-                      bn_quant_mode=bn_mode, bn_bits=bn_bits, calibration_batches=calib_batches)
+                      calibration_batches=calib_batches)
     swap_to_quant_modules(model, cfg)
     attach_block_output_quant(model, cfg.activation_quant_bits)
 
-    # Quantize BatchNorm weights and biases
-    quantize_batchnorm(model, mode=cfg.bn_quant_mode, bits=cfg.bn_bits)
-
-    # swapped modules are in cpu by default, need to move them to gpu
+    # swapped modules (including BatchNorm's replacement) are on cpu by
+    # default, need to move them to gpu
     model.to(device)
 
     # print(f"Calibrating with {cfg.calibration_batches} batches (from TRAIN data, not test)...")
@@ -658,7 +602,7 @@ def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8,
             acc_meter.update(top1, images.size(0))
 
     sample_batch, _ = next(iter(test_loader))
-    report = compression_ratio_report(model, model_fp32, cfg.weight_quant_bits, bn_mode=cfg.bn_quant_mode, bn_bits=cfg.bn_bits)
+    report = compression_ratio_report(model, model_fp32, cfg.weight_quant_bits)
     act_report = estimate_activation_compression(model, sample_batch, cfg.activation_quant_bits, device)
 
     fp32_acc_str = f"{baseline_acc:.2f}%" if isinstance(baseline_acc, (int, float)) else str(baseline_acc)
@@ -681,8 +625,6 @@ def _parse_args():
     p.add_argument("--act-bits", type=int, default=8)
     p.add_argument("--calib-batches", type=int, default=40)
     p.add_argument("--sparsity", type=float, default=0.3)
-    p.add_argument("--bn-mode", type=str, default="fp16", choices=["fp16", "fp8", "fp4", "int", "none"])
-    p.add_argument("--bn-bits", type=int, default=16, help="Only used when --bn-mode int")
     p.add_argument("--pruning-method", type=str, default="magnitude", choices=["magnitude", "hessian"])
     p.add_argument("--download", action="store_true", default=False,
                     help="Download CIFAR-10 into --data-dir if not already present")
@@ -696,8 +638,6 @@ if __name__ == "__main__":
         data_dir=args.data_dir,
         weight_bits=args.weight_bits,
         act_bits=args.act_bits,
-        bn_mode=args.bn_mode,
-        bn_bits=args.bn_bits,
         calib_batches=args.calib_batches,
         sparsity=args.sparsity,
         pruning_method=args.pruning_method,

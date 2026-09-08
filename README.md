@@ -21,7 +21,7 @@ bringing total downsampling to 8x -> a 4x4 final feature map. See the
 docstring in `model.py` for the exact layers touched and the reasoning.
 
 1. Magnitude based pruning seems to be working better than Hessian-based, need to look into why,
-2. Batch Norm parameters are quantized seperately, since they are more sensitive, but FP works worse than INT, need to look into why,
+2. ~~Batch Norm parameters are quantized seperately, since they are more sensitive~~ — reverted: BatchNorm's `weight` is now quantized exactly like Conv2d/Linear (same `weight_bits`, same per-channel scheme), no separate BN precision mode. In practice BatchNorm isn't especially sensitive to this, so the earlier separate fp16/fp8/fp4/int handling was unnecessary complexity.
 
 
 ## Quantize Option
@@ -31,8 +31,6 @@ python quantize.py \
   --data-dir ./data \
   --weight-bits 4 \
   --act-bits 6 \
-  --bn-mode fp8 \
-  --bn-bits 8 \
   --calib-batches 40 \
   --sparsity 0.85 \
   --pruning-method magnitude
@@ -49,8 +47,6 @@ quant_rpt = run_quantization_pipeline(
     data_dir=DATA_DIR,
     weight_bits=4,
     act_bits=6,
-    bn_mode="fp8",
-    bn_bits=8,
     calib_batches=40,
     sparsity=0.85,
     pruning_method='magnitude',
@@ -62,31 +58,34 @@ quant_rpt = run_quantization_pipeline(
 |-------|---------|-------------|
 | `ckpt_path` | *required* | Path to a baseline checkpoint (`state_dict` or wrapped dict — see `load_state_dict_flexible`) |
 | `data_dir` | *required* | Path to CIFAR-10 data directory |
-| `weight_bits` | `8` | Weight bit-width (e.g. `4` for INT4), per-channel symmetric |
+| `weight_bits` | `8` | Weight bit-width (e.g. `4` for INT4), per-channel symmetric. Applied uniformly to Conv2d, Linear, **and BatchNorm2d's `weight`/gamma** — no per-layer-type exception |
 | `act_bits` | `8` | Activation bit-width (e.g. `6` for ACT6), per-tensor asymmetric, fake-quant only |
 | `calib_batches` | `40` | Number of training-set batches used to calibrate activation ranges |
-| `sparsity` | `0.3` | Fraction of Conv2d/Linear weights zeroed before quantization |
+| `sparsity` | `0.3` | Fraction of Conv2d/Linear weights zeroed before quantization, per `pruning_method` |
 | `pruning_method` | `"magnitude"` | `"magnitude"` — global unstructured pruning by `\|w\|`. `"hessian"` — Optimal Brain Damage saliency (`0.5 * H_ii * w_i^2`), where `H_ii` is an empirical-Fisher diagonal estimated from `calib_batches` of real training data (`compute_fisher_diagonal` + `apply_hessian_pruning`) — costs one extra forward+backward pass per calibration batch, but ranks a weight by how much removing it actually moves the loss, not just its magnitude |
-| `bn_mode` | `"fp16"` | Precision used to fake-quantize each BatchNorm layer's `weight`/`bias`. One of `"fp16"` (true half-precision round-trip), `"fp8"` (8-bit float, E4M3: 1 sign + 4 exponent + 3 mantissa bits), `"fp4"` (4-bit float, E2M1: 1 sign + 2 exponent + 1 mantissa bit, max representable magnitude 6.0 — expect visible accuracy loss), `"int"` (fixed-point at `bn_bits`, per-parameter scale), or `"none"` (skip; BN stays fp32) |
-| `bn_bits` | `16` | Bit-width for fixed-point BN quantization — only consulted when `bn_mode="int"` |
 | `download` | `False` | If set, downloads CIFAR-10 into `data_dir` if not already present |
 
-fp8/fp4 are implemented as a generic minifloat fake-quantizer
-(`quantize_to_minifloat`, per-element: pick the representable power-of-two
-exponent, then round the mantissa to the target bit-width) rather than
-relying on hardware fp8/fp4 dtypes, so `--bn-mode fp8`/`fp4` behave
-identically on CPU and GPU regardless of torch version.
+**BatchNorm gets no special-cased quantization.** `swap_to_quant_modules`
+replaces every `nn.BatchNorm2d` with a `QuantBatchNorm2d` that quantizes its
+`weight` (gamma) with the exact same per-channel symmetric scheme and the
+same `weight_bits` as `QuantConv2d`/`QuantLinear` — there's no separate
+`bn_mode`/`bn_bits` knob. `bias` (beta) stays fp32, mirroring how
+`QuantConv2d`/`QuantLinear` also leave their bias unquantized;
+`running_mean`/`running_var` are buffers, not weights, and are untouched.
+(An earlier iteration gave BatchNorm its own separate fp16/fp8/fp4/int
+precision mode on the theory that it's unusually sensitive — that turned out
+not to be true in practice, so it's back to being treated like every other
+weight-bearing layer.)
 
 **Pipeline steps** (`run_quantization_pipeline`):
 1. Loads the baseline checkpoint (`state_dict` or wrapped dict) and moves the model to `device`
 2. Prunes weights to the target `sparsity` via `pruning_method` (`magnitude` or `hessian`)
-3. Swaps Conv2d/Linear layers for quantized variants (`QuantConv2d`/`QuantLinear`) and wraps ReLU/ReLU6 with activation fake-quant
+3. Swaps Conv2d/Linear/BatchNorm2d layers for quantized variants (`QuantConv2d`/`QuantLinear`/`QuantBatchNorm2d`) and wraps ReLU/ReLU6 with activation fake-quant
 4. Attaches activation quantizers to `InvertedResidual` block outputs (`attach_block_output_quant`) — needed because linear-bottleneck/residual outputs aren't reachable by the isinstance-based swap in step 3
-5. Fake-quantizes BatchNorm `weight`/`bias` per `bn_mode` (`quantize_batchnorm`)
-6. Moves the newly created quantized submodules to `device` (they're constructed on CPU in step 3, so this second `.to(device)` is required — see Device handling below)
-7. Calibrates activation ranges on `calib_batches` batches of **training** data
-8. Freezes all quantization parameters (`freeze_all`)
-9. Evaluates on the test set and reports accuracy, size, and compression ratios
+5. Moves the newly created quantized submodules to `device` (they're constructed on CPU in step 3, so this second `.to(device)` is required — see Device handling below)
+6. Calibrates activation ranges on `calib_batches` batches of **training** data
+7. Freezes all quantization parameters (`freeze_all`)
+8. Evaluates on the test set and reports accuracy, size, and compression ratios
 
 ## Running Locally vs. Kaggle
 This repo was originally driven from a Kaggle notebook (cloning the repo into
@@ -186,6 +185,7 @@ Checkpoints are written to `<out_dir>/best.pth` (highest test top-1 so far)
 and `<out_dir>/last.pth` (most recent epoch) — e.g. `./outputs/baseline/best.pth`.
 
 ## General Keynotes
+- **Device handling**: Both scripts auto-detect `cuda`/`cpu` — no code changes needed to run locally without a GPU. In `quantize.py` the model is moved to `device` *twice*: once right after loading (so Hessian pruning's forward/backward passes and magnitude pruning both run on `device`), and again after `swap_to_quant_modules`/`attach_block_output_quant`, since those construct brand-new `QuantConv2d`/`QuantLinear`/`QuantBatchNorm2d`/`ActFakeQuant` submodules on CPU by default — the second `.to(device)` sweeps those along with everything else. This is intentional, not a leftover bug; a CPU-only run will just be slower, not broken.
 - **Checkpoint format**: Checkpoints saved by `train.py` contain `state_dict`, `optimizer_state_dict`, `scaler_state_dict`, `best_acc`, and `config`. `load_state_dict_flexible()` in `quantize.py` tolerates both this wrapped-dict format and a raw `state_dict`.
 - **Quantization is fake-quant only**: weights and activations are rounded/dequantized in-place to *simulate* quantization; compute still runs in FP32 — there are no custom INT kernels, so quantized runs are not faster, only smaller (as reported by `compression_ratio_report`).
 - **Data-dir reuse between train and quantize**: `quantize.py` defaults to `download=False` because it's normally pointed at the same `data_dir` a prior `train.py --download` run already populated. Point both scripts at the same `--data-dir` unless you want CIFAR-10 downloaded twice.
