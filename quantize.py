@@ -9,7 +9,9 @@ quantize.py — INT8 post-training quantization for MobileNetV2-CIFAR.
 Design choices:
   - Per-channel weights, per-tensor activations
   - BatchNorm layers are replaced with quantized-counterparts,
-    since it has few parameters, and is not a bottle neck.
+    since it has few parameters, and is not a bottleneck. Supported
+    bn_mode values: "fp16", "fp8", "fp4", "int", "none" — see
+    quantize_batchnorm.
   - MobileNetV2's linear-bottleneck projection convs have no ReLU6 after
     them (Sandler et al. 2018), and residual-add outputs pass through no
     activation module at all — swap_to_quant_modules's isinstance-based
@@ -17,15 +19,24 @@ Design choices:
     attach_block_output_quant, which hooks InvertedResidual.forward's
     RETURN VALUE directly (works for both the skip-connection case,
     x + conv(x), and the no-skip case, just conv(x)).
+  - pruning_method="magnitude" (default) ranks weights by |w|; "hessian"
+    ranks by Optimal Brain Damage saliency (0.5 * H_ii * w_i^2) using an
+    empirical-Fisher diagonal estimated from real data — see
+    compute_fisher_diagonal / apply_hessian_pruning.
 
 Usage:
-    from quantize import run_quantization_pipeline
-    run_quantization_pipeline(
-        ckpt_path="/kaggle/working/MobileNetV2-Compression/outputs/baseline/best.pth",
-        data_dir=DATA_DIR,
-        calib_batches=40,
-    )
+    Python:
+        from quantize import run_quantization_pipeline
+        run_quantization_pipeline(
+            ckpt_path="outputs/baseline/best.pth",
+            data_dir=DATA_DIR,
+            calib_batches=40,
+        )
+
+    CLI:
+        python quantize.py --ckpt-path outputs/baseline/best.pth --data-dir ./data
 """
+import argparse
 import io
 import os
 import copy
@@ -44,9 +55,11 @@ except ImportError:
 
 @dataclass
 class QuantConfig:
-    sparsity: float = 0.3 
+    sparsity: float = 0.3
     weight_quant_bits: int = 8
     activation_quant_bits: int = 8
+    bn_quant_mode: str = "fp16"  # Options: "fp16", "fp8", "fp4", "int", "none"
+    bn_bits: int = 16            # only consulted when bn_quant_mode == "int"
     calibration_batches: int = 40   # confirmed better than 20 empirically
 
 
@@ -69,6 +82,100 @@ def weight_qparams_per_channel(w, n_bits, eps=1e-8):
     return max_abs / qmax, -qmax, qmax
 
 
+def quantize_to_minifloat(x, exp_bits, mantissa_bits):
+    """
+    Fake-quantizes `x` to a low-precision FLOATING-POINT format with 1 sign
+    bit, `exp_bits` exponent bits, and `mantissa_bits` mantissa bits (e.g.
+    exp_bits=4, mantissa_bits=3 -> 8-bit "E4M3", the common fp8 layout;
+    exp_bits=2, mantissa_bits=1 -> 4-bit "E2M1", a common fp4 layout).
+
+    No native torch fp8/fp4 dtype is used, so this runs identically on CPU
+    and GPU regardless of torch version / hardware support: for each element
+    we pick the representable power-of-two exponent, then round the mantissa
+    to `mantissa_bits` bits at that exponent's step size. Same fake-quant
+    philosophy as the rest of this file — the VALUE is constrained to what
+    the target format could represent, but compute stays in fp32.
+    """
+    bias = (1 << (exp_bits - 1)) - 1
+    max_exp = (1 << exp_bits) - 1 - bias
+    min_exp = 1 - bias  # smallest normal exponent (subnormals collapse to this grid)
+
+    sign = torch.sign(x)
+    x_abs = x.abs()
+
+    max_normal = (2 - 2.0 ** -mantissa_bits) * (2.0 ** max_exp)
+    x_abs = x_abs.clamp(max=max_normal)
+
+    safe_abs = x_abs.clamp_min(2.0 ** min_exp * 2.0 ** -mantissa_bits)  # avoid log2(0)
+    exponent = torch.floor(torch.log2(safe_abs)).clamp(min=min_exp, max=max_exp)
+
+    step = 2.0 ** (exponent - mantissa_bits)
+    rounded = torch.round(x_abs / step) * step
+
+    return torch.where(x_abs == 0, torch.zeros_like(x_abs), sign * rounded)
+
+
+_BN_MODE_BYTES_PER_ELEM = {"fp16": 2, "fp8": 1, "fp4": 0.5}
+_BN_MODE_BIT_LABEL = {"fp16": 16, "fp8": 8, "fp4": 4}
+
+
+def quantize_batchnorm(model, mode="fp16", bits=16):
+    """
+    mode="fp16": halves storage via true float16 conversion, no calibration needed.
+    mode="fp8":  simulates an 8-bit float (E4M3: 1 sign + 4 exponent + 3
+                 mantissa bits) via quantize_to_minifloat.
+    mode="fp4":  simulates a 4-bit float (E2M1: 1 sign + 2 exponent + 1
+                 mantissa bit) the same way. Very aggressive — expect BN
+                 weight/bias drift to start hurting accuracy at this width.
+    mode="int":  fixed-point quantization at `bits`, per-tensor (BN layers are
+                 small enough that per-channel granularity isn't worth the
+                 added scale-storage overhead here).
+    Excludes running_mean/running_var by default (see note on risk above) and
+    always excludes num_batches_tracked (a training-only counter, not a value
+    to compress).
+    """
+    stats = {"n_bn_layers": 0, "bytes_before": 0, "bytes_after": 0}
+
+    if mode is None or mode == "none":
+        return stats
+
+    for m in model.modules():
+        if isinstance(m, nn.BatchNorm2d):
+            stats["n_bn_layers"] += 1
+            for pname in ("weight", "bias"):
+                p = getattr(m, pname)
+                if p is None:
+                    continue
+                stats["bytes_before"] += p.numel() * 4
+
+                if mode == "fp16":
+                    p.data = p.data.half().float()   # round-trip through fp16 to SIMULATE the
+                                                     # precision loss; .float() keeps the actual
+                                                     # forward pass running in fp32 arithmetic,
+                                                     # same fake-quant philosophy as everywhere else
+                    stats["bytes_after"] += p.numel() * _BN_MODE_BYTES_PER_ELEM["fp16"]
+
+                elif mode == "fp8":
+                    p.data = quantize_to_minifloat(p.data, exp_bits=4, mantissa_bits=3)
+                    stats["bytes_after"] += p.numel() * _BN_MODE_BYTES_PER_ELEM["fp8"]
+
+                elif mode == "fp4":
+                    p.data = quantize_to_minifloat(p.data, exp_bits=2, mantissa_bits=1)
+                    stats["bytes_after"] += p.numel() * _BN_MODE_BYTES_PER_ELEM["fp4"]
+
+                elif mode == "int":
+                    scale, qmin, qmax = weight_qparams_per_channel(p.data.unsqueeze(-1), bits)
+                    q = quantize(p.data.unsqueeze(-1), scale, 0, qmin, qmax)
+                    p.data = dequantize(q, scale, 0).squeeze(-1)
+                    stats["bytes_after"] += p.numel() * bits / 8
+
+    label_bits = _BN_MODE_BIT_LABEL.get(mode, bits if mode == "int" else "?")
+    print(f"BatchNorm quantization ({mode}, {label_bits}-bit): "
+          f"{stats['n_bn_layers']} layers, "
+          f"{stats['bytes_before']/1024:.1f} KB -> {stats['bytes_after']/1024:.1f} KB")
+    return stats
+
+
 # ---------------------------------------------------------------------------
 # weight quant-aware layers
 # ---------------------------------------------------------------------------
@@ -80,7 +187,7 @@ which help us effectively simulate quantization.
 ---
 Since we are not using custom kernels, we do "fake quantization", where the "effect"
 of quantization is simulated by rounding the weights and activations,
-but the compute is still done in FP32. Hence after every forward pass, 
+but the compute is still done in FP32. Hence after every forward pass,
 the activations must be dequantized -> and then quantized, this simulated forcing
 the forward pass results to be in the quantized space.
 Although weights are also "fake", we effectively only need the activations to be quantized,
@@ -152,45 +259,119 @@ class ActFakeQuant(nn.Module):
     @torch.no_grad()
     def freeze(self):
         qmax = (1 << self.n_bits) - 1
-        
-        # FIX: Use the actual observed minimum, not zero. 
-        # This properly handles both post-ReLU (min ~ 0) 
+
+        # FIX: Use the actual observed minimum, not zero.
+        # This properly handles both post-ReLU (min ~ 0)
         # and linear bottlenecks (min < 0).
-        lo = self.min_val 
-        
+        lo = self.min_val
+
         scale = (self.max_val - lo).clamp_min(1e-8) / qmax
         zp = torch.round(-lo / scale)
-        
+
         self.register_buffer("scale", scale)
         self.register_buffer("zp", zp)
         self.qmin, self.qmax = 0, qmax
         self.frozen = True
 
+
+def compute_fisher_diagonal(model, loader, criterion, device, n_batches=10):
+    """
+    Approximates the Hessian diagonal (H_ii) of the LOSS w.r.t. each weight,
+    via the empirical Fisher Information: H_ii ~ E[(dL/dw_i)^2], averaged
+    over `n_batches` of real data. This is a stand-in for the true second
+    derivative (which needs a second backward pass, Hutchinson-style) --
+    cheap, one backward pass per batch, and exact for cross-entropy loss
+    under the standard Gauss-Newton approximation.
+    """
+    model.eval()  # BN uses running stats, not batch stats -- consistent estimate
+    fisher = {name: torch.zeros_like(p) for name, p in model.named_parameters()
+              if p.requires_grad and "weight" in name and p.dim() > 1}
+
+    n = 0
+    for i, (images, targets) in enumerate(loader):
+        if i >= n_batches:
+            break
+        images, targets = images.to(device), targets.to(device)
+        model.zero_grad()
+        loss = criterion(model(images), targets)
+        loss.backward()
+        for name, p in model.named_parameters():
+            if name in fisher and p.grad is not None:
+                fisher[name] += p.grad.detach() ** 2
+        n += 1
+
+    for name in fisher:
+        fisher[name] /= n
+    model.zero_grad()
+    return fisher
+
+
+### Hessian based pruning
 @torch.no_grad()
+def apply_hessian_pruning(model, fisher_diag, sparsity=0.3):
+    """
+    Optimal Brain Damage saliency (LeCun, Denker, Solla, 1990):
+        lambda_i = 0.5 * H_ii * w_i^2
+    Global threshold across all layers, same structure as
+    apply_global_magnitude_pruning, but ranking by saliency instead of
+    raw |w_i| -- a weight can be LARGE but still low-saliency if it sits
+    in a flat (low-curvature) region of the loss, and vice versa.
+    """
+    all_saliency = []
+    for name, m in model.named_modules():
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            wname = name + ".weight"
+            if wname not in fisher_diag:
+                continue
+            saliency = 0.5 * fisher_diag[wname] * m.weight.data ** 2
+            all_saliency.append(saliency.view(-1))
+
+    threshold = torch.quantile(torch.cat(all_saliency), sparsity).item()
+
+    pruned, total = 0, 0
+
+    for name, m in model.named_modules():
+        if isinstance(m, (nn.Conv2d, nn.Linear)):
+            wname = name + ".weight"
+            if wname not in fisher_diag:
+                continue
+            saliency = 0.5 * fisher_diag[wname] * m.weight.data ** 2
+            mask = saliency >= threshold
+            m.weight.data.mul_(mask.type_as(m.weight.data))
+            pruned += (~mask).sum().item()
+            total += mask.numel()
+
+    print(f"Hessian(Fisher)-based pruning: {pruned}/{total} removed "
+          f"({pruned/total*100:.2f}%), threshold={threshold:.3e}")
+    return model
+
+
+@torch.no_grad()
+###### Magnitude based pruning
 def apply_global_magnitude_pruning(model, sparsity=0.3):
     """
     Manually applies global unstructured magnitude pruning across all Conv2d and Linear layers.
     """
     all_weights = []
-    
+
     # 1. Collect absolute values of all weights
     for m in model.modules():
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             all_weights.append(m.weight.view(-1).abs())
-            
+
     if not all_weights:
         return model
-        
+
     concat_weights = torch.cat(all_weights)
-    
+
     # 2. Find the global threshold using the exact quantile
     # e.g., if sparsity is 0.3, find the value at the 30th percentile
     threshold = torch.quantile(concat_weights, sparsity).item()
-    
+
     # 3. Apply the threshold mask to permanently zero out the weights
     pruned_params = 0
     total_params = 0
-    
+
     for m in model.modules():
         if isinstance(m, (nn.Conv2d, nn.Linear)):
             total_params += m.weight.numel()
@@ -198,11 +379,12 @@ def apply_global_magnitude_pruning(model, sparsity=0.3):
             mask = m.weight.abs() >= threshold
             # Multiply data by mask (converts False to 0.0, True to 1.0)
             m.weight.data.mul_(mask.type_as(m.weight.data))
-            
+
             pruned_params += (mask == False).sum().item()
-            
+
     print(f"Manual Global Pruning: {pruned_params}/{total_params} parameters removed ({(pruned_params/total_params)*100:.2f}%). Threshold: {threshold:.6f}")
     return model
+
 
 # ---------------------------------------------------------------------------
 # model surgery
@@ -280,6 +462,7 @@ def freeze_all(model):
         if isinstance(m, (QuantConv2d, QuantLinear, ActFakeQuant)):
             m.freeze()
 
+
 # ---------------------------------------------------------------------------
 # size + compression-ratio reporting (Now Mathematical & Direct)
 # ---------------------------------------------------------------------------
@@ -292,55 +475,68 @@ def fp32_size_mb(model):
     return total / (1024 ** 2)
 
 
-def compression_ratio_report(model, model_fp32, weight_bits):
+def compression_ratio_report(model, model_fp32, weight_bits, bn_mode="fp16", bn_bits=16):
     """
-    Calculates size reflecting both uniform bit-width quantization 
+    Calculates size reflecting both uniform bit-width quantization
     and non-zero weight counts resulting from pruning.
     """
     fp32_mb = fp32_size_mb(model_fp32)
-    
+
     n_layers, n_scales, other_bytes = 0, 0, 0
     total_quant_elements = 0
     nonzero_quant_elements = 0
     quantized_names = set()
-    
+
     # 1. Tally parameters and non-zero elements
     for name, m in model.named_modules():
         if isinstance(m, (QuantConv2d, QuantLinear)):
             n_layers += 1
             n_scales += m.w_scale.numel()
             quantized_names.add(name)
-            
+
             total_els = m.weight.numel()
             nnz = (m.weight != 0).sum().item()
-            
+
             total_quant_elements += total_els
             nonzero_quant_elements += nnz
 
     # 2. Unquantized parameters (BatchNorms, unquantized biases, etc.)
+    bn_modules = {name for name, m in model.named_modules() if isinstance(m, nn.BatchNorm2d)}
+
     for key, tensor in model.state_dict().items():
         owner = key.rsplit(".", 1)[0]
+        param_name = key.rsplit(".", 1)[-1]
         if owner not in quantized_names:
-            other_bytes += tensor.numel() * tensor.element_size()
+            if owner in bn_modules and param_name in ("weight", "bias"):
+                if bn_mode in _BN_MODE_BYTES_PER_ELEM:
+                    other_bytes += tensor.numel() * _BN_MODE_BYTES_PER_ELEM[bn_mode]
+                elif bn_mode == "int":
+                    other_bytes += tensor.numel() * (bn_bits / 8)
+                else:
+                    other_bytes += tensor.numel() * tensor.element_size()
+            else:
+                other_bytes += tensor.numel() * tensor.element_size()
 
     # 3. Memory footprint calculations:
     # - Non-zero weights store values at `weight_bits`
     # - Sparse mask adds 1 bit per total parameter
     sparse_weight_bits = (nonzero_quant_elements * weight_bits) + total_quant_elements
     quantized_weights_only_mb = (sparse_weight_bits / 8) / (1024 ** 2)
-    
+
     scale_storage_mb = (n_scales * 4) / (1024 ** 2)     # FP32 scale buffers
     bn_and_other_fp32_mb = other_bytes / (1024 ** 2)
-    
+    print("number of scales: ", n_scales)
+    print("other fp32 params: ", other_bytes)
+
     theoretical_total_mb = quantized_weights_only_mb + scale_storage_mb + bn_and_other_fp32_mb
-    
+
     # 4. FP32 baseline weight metrics
     fp32_weight_bytes = sum(
         p.numel() * 4 for n, p in model_fp32.named_parameters()
         if n.endswith("weight") and p.dim() > 1
     )
     fp32_weights_only_mb = fp32_weight_bytes / (1024 ** 2)
-    
+
     overall_sparsity = 1.0 - (nonzero_quant_elements / total_quant_elements) if total_quant_elements > 0 else 0.0
 
     return {
@@ -360,9 +556,9 @@ def compression_ratio_report(model, model_fp32, weight_bits):
 
 def estimate_activation_compression(model, sample_batch, act_bits, device):
     """
-    Hooks every ActFakeQuant module and counts how many activation values actually 
-    flow through it during ONE real forward pass on `sample_batch`. Activations 
-    are never saved to disk (they're transient) -- this reports a RUNTIME MEMORY 
+    Hooks every ActFakeQuant module and counts how many activation values actually
+    flow through it during ONE real forward pass on `sample_batch`. Activations
+    are never saved to disk (they're transient) -- this reports a RUNTIME MEMORY
     footprint for one forward pass, fp32 vs act_bits.
     """
     count = {"n": 0}
@@ -401,7 +597,9 @@ def load_state_dict_flexible(ckpt_path):
 # High-Level Pipeline & CLI
 # ---------------------------------------------------------------------------
 def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8,
-                               calib_batches=40, sparsity=0.3):
+                               bn_mode="fp16", bn_bits=16, calib_batches=40,
+                               sparsity=0.3, pruning_method="magnitude",
+                               download=False):
     from model import MobileNetV2CIFAR
     from data import get_dataloaders
     from utils import accuracy, AverageMeter
@@ -413,16 +611,37 @@ def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8,
 
     model = MobileNetV2CIFAR(num_classes=10, dropout=0.2)
     model.load_state_dict(state_dict)
+    model.to(device)
+
+    # `download` defaults to False since quantization normally runs against
+    # data already fetched during training. On a fresh local clone with no
+    # cached dataset, pass download=True / --download once.
+    train_loader, test_loader = get_dataloaders(data_dir=data_dir, download=download)
+
     # global pruning before quantization
-    model = apply_global_magnitude_pruning(model, sparsity)
+    if pruning_method == "hessian":
+        criterion_for_fisher = nn.CrossEntropyLoss()
+        fisher = compute_fisher_diagonal(model, train_loader, criterion_for_fisher, device, n_batches=calib_batches)
+        model = apply_hessian_pruning(model, fisher, sparsity)
+        for name, m in model.named_modules():
+            if isinstance(m, nn.Conv2d) and name + ".weight" in fisher:
+                is_depthwise = m.groups == m.in_channels
+                avg_fisher = fisher[name + ".weight"].mean().item()
+                print(f"{name:40s} depthwise={is_depthwise}  mean_H_ii={avg_fisher:.3e}")
+    else:
+        model = apply_global_magnitude_pruning(model, sparsity)
+
     model_fp32 = copy.deepcopy(model)   # untouched reference, for size comparison
 
-    train_loader, test_loader = get_dataloaders(data_dir=data_dir, download=False)
-
     cfg = QuantConfig(weight_quant_bits=weight_bits, activation_quant_bits=act_bits,
-                       calibration_batches=calib_batches)
+                      bn_quant_mode=bn_mode, bn_bits=bn_bits, calibration_batches=calib_batches)
     swap_to_quant_modules(model, cfg)
     attach_block_output_quant(model, cfg.activation_quant_bits)
+
+    # Quantize BatchNorm weights and biases
+    quantize_batchnorm(model, mode=cfg.bn_quant_mode, bits=cfg.bn_bits)
+
+    # swapped modules are in cpu by default, need to move them to gpu
     model.to(device)
 
     # print(f"Calibrating with {cfg.calibration_batches} batches (from TRAIN data, not test)...")
@@ -439,7 +658,7 @@ def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8,
             acc_meter.update(top1, images.size(0))
 
     sample_batch, _ = next(iter(test_loader))
-    report = compression_ratio_report(model, model_fp32, cfg.weight_quant_bits)
+    report = compression_ratio_report(model, model_fp32, cfg.weight_quant_bits, bn_mode=cfg.bn_quant_mode, bn_bits=cfg.bn_bits)
     act_report = estimate_activation_compression(model, sample_batch, cfg.activation_quant_bits, device)
 
     fp32_acc_str = f"{baseline_acc:.2f}%" if isinstance(baseline_acc, (int, float)) else str(baseline_acc)
@@ -453,3 +672,34 @@ def run_quantization_pipeline(ckpt_path, data_dir, weight_bits=8, act_bits=8,
 
     return {"accuracy": acc_meter.avg, **report, **act_report}
 
+
+def _parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--ckpt-path", type=str, required=True, help="Path to baseline checkpoint (.pth)")
+    p.add_argument("--data-dir", type=str, default="./data")
+    p.add_argument("--weight-bits", type=int, default=8)
+    p.add_argument("--act-bits", type=int, default=8)
+    p.add_argument("--calib-batches", type=int, default=40)
+    p.add_argument("--sparsity", type=float, default=0.3)
+    p.add_argument("--bn-mode", type=str, default="fp16", choices=["fp16", "fp8", "fp4", "int", "none"])
+    p.add_argument("--bn-bits", type=int, default=16, help="Only used when --bn-mode int")
+    p.add_argument("--pruning-method", type=str, default="magnitude", choices=["magnitude", "hessian"])
+    p.add_argument("--download", action="store_true", default=False,
+                    help="Download CIFAR-10 into --data-dir if not already present")
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    run_quantization_pipeline(
+        ckpt_path=args.ckpt_path,
+        data_dir=args.data_dir,
+        weight_bits=args.weight_bits,
+        act_bits=args.act_bits,
+        bn_mode=args.bn_mode,
+        bn_bits=args.bn_bits,
+        calib_batches=args.calib_batches,
+        sparsity=args.sparsity,
+        pruning_method=args.pruning_method,
+        download=args.download,
+    )

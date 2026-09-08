@@ -214,7 +214,7 @@ def _parse_args() -> TrainConfig:
     p.add_argument("--pretrained", action="store_true", default=d.pretrained)
     p.add_argument("--num-workers", type=int, default=d.num_workers)
     p.add_argument("--seed", type=int, default=d.seed)
-    p.add_argument("--amp", action="store_true", default=d.amp)
+    p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=d.amp)
     p.add_argument("--use-wandb", action="store_true", default=d.use_wandb)
     p.add_argument("--resume", type=str, default=d.resume)
     p.add_argument("--download", action="store_true", default=d.download)
